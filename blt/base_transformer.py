@@ -8,12 +8,23 @@ import torch
 from pydantic import BaseModel, ConfigDict
 from torch import nn
 from torch.nn import functional as F
-from torch.nn.attention.flex_attention import (
-    BlockMask,
-    _mask_mod_signature,
-    flex_attention,
-)
-from xformers.ops import AttentionBias, fmha
+
+try:
+    from torch.nn.attention.flex_attention import (
+        BlockMask,
+        _mask_mod_signature,
+        flex_attention,
+    )
+except ImportError:
+    BlockMask = None  # type: ignore[misc, assignment]
+    _mask_mod_signature = None  # type: ignore[misc, assignment]
+    flex_attention = None  # type: ignore[misc, assignment]
+
+try:
+    from xformers.ops import AttentionBias, fmha
+except ImportError:
+    AttentionBias = None  # type: ignore[misc, assignment]
+    fmha = None  # type: ignore[misc, assignment]
 
 # from bytelatent.tokenizers.constants import EOS_ID
 
@@ -27,7 +38,7 @@ except (ImportError, ModuleNotFoundError):
     logging.debug("Apex not found. Using nn.RMSNorm")
     RMSNorm = nn.RMSNorm
 
-if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
+if flex_attention is not None and int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
     flex_attention_comp = torch.compile(flex_attention)
 else:
     flex_attention_comp = None
@@ -56,49 +67,77 @@ TODO do we want to implement this?
 
 # --- ALL THE ARGUMENT CLASSES ---
 
-class AttentionArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    dim: int = 512
-    n_heads: int = 8
-    n_kv_heads: int = None
-    ffn_dim_multiplier: float = 4.0
-    multiple_of: int = 256
-
 class BaseTransformerArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dim: int = 512
     n_layers: int = 8
+    n_heads: int = 8
     head_dim: int | None = None
-    n_heads: int | None = None
     n_kv_heads: int | None = None
     ffn_dim_multiplier: float | None = None
     multiple_of: int = 256
+    vocab_size: int = 32000  # default llama-2-ish size
+    max_seqlen: int = 2048
+    rope_theta: float = 10000.0
+    norm_eps: float = 1e-5
 # in practice, we use GQA, so this is why we have n_kv_heads.
 # but since we set to None this kinda means we just do traditional MHA.
 
 
 # --- modules and stuff ---
 
+
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    d = x.shape[-1] // 2
+    x1, x2 = x[..., :d], x[..., d:]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+# TODO i need to understand this better
 class RoPE(nn.Module):
+    """
+    rotary position embeddings applied to q and k after projection.
+    q, k: [batch, n_heads, n_ctx, head_dim]
+    """
+
+    def __init__(self, head_dim: int, max_seqlen: int, theta: float = 10000.0):
+        super().__init__()
+        if head_dim % 2 != 0:
+            raise ValueError("[rope] head_dim must be even")
+        self.head_dim = head_dim
+        self.max_seqlen = max_seqlen
+        inv_freq = 1.0 / (
+            theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
+        )
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        n_ctx = q.shape[2]
+        if n_ctx > self.max_seqlen:
+            raise ValueError(f"[rope] sequence length {n_ctx} exceeds max_seqlen {self.max_seqlen}")
+        t = torch.arange(n_ctx, device=q.device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(q.device))
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos().to(dtype=q.dtype).view(1, 1, n_ctx, self.head_dim)
+        sin = emb.sin().to(dtype=q.dtype).view(1, 1, n_ctx, self.head_dim)
+        q_out = (q * cos) + (_rotate_half(q) * sin)
+        k_out = (k * cos) + (_rotate_half(k) * sin)
+        return q_out, k_out
+
+
+class Attention(nn.Module):
     def __init__(self, args: BaseTransformerArgs):
         super().__init__()
         self.args = args
-        self.w = nn.Parameter(torch.randn(args.dim // 2))
-        self.register_buffer("cos_cached", None)
-        self.register_buffer("sin_cached", None)
-
-    def forward(self, x: torch.Tensor, seq_len: int) -> torch.Tensor:
-        if self.cos_cached is None or self.sin_cached is None or self.cos_cached.shape[0] != seq_len:
-            self.cos_cached = torch.cos(self.w)
-            self.sin_cached = torch.sin(self.w)
-        cos = self.cos_cached[None, :seq_len, None, :]
-        sin = self.sin_cached[None, :seq_len, None, :]
-        return x * cos + x * sin
-
-class Attention(nn.Module):
-    def __init__(self, args: AttentionArgs):
-        super().__init__()
-        self.args = args
+        n_heads = args.n_heads
+        if n_heads is None:
+            raise ValueError("[attention] n_heads is required")
+        head_dim = args.head_dim if args.head_dim is not None else args.dim // n_heads
+        self.rope = RoPE(
+            head_dim=head_dim,
+            max_seqlen=args.max_seqlen,
+            theta=args.rope_theta,
+        )
         self.q_proj = nn.Linear(args.dim, args.dim)
         self.k_proj = nn.Linear(args.dim, args.dim)
         self.v_proj = nn.Linear(args.dim, args.dim)
@@ -110,16 +149,14 @@ class Attention(nn.Module):
         1. assign all of our dimensions to variables
         2. get the q k v's using our linear projections
         3. bring the QKV into a good view,
-        4. apply the mask, do the SDPA.
+        4. apply rope to q and k, then sdpa.
         """
 
         b, n_ctx, _ = x.shape
         n_heads = self.args.n_heads
         if n_heads is None:
             raise ValueError("[attention] n_heads is required")
-        head_dim = getattr(self.args, "head_dim", None)
-        if head_dim is None:
-            head_dim = self.args.dim // n_heads
+        head_dim = self.args.head_dim if self.args.head_dim is not None else self.args.dim // n_heads
 
         q = self.q_proj(x)
         k = self.k_proj(x)
@@ -129,6 +166,8 @@ class Attention(nn.Module):
         q = q.view(b, n_ctx, n_heads, head_dim).transpose(1, 2)
         k = k.view(b, n_ctx, n_heads, head_dim).transpose(1, 2)
         v = v.view(b, n_ctx, n_heads, head_dim).transpose(1, 2)
+
+        q, k = self.rope(q, k)
 
         # scaling + softmax + matmul@v live here; use is_causal only when no explicit mask
         if mask is not None:
@@ -143,8 +182,10 @@ class FFN(nn.Module):
     def __init__(self, args: BaseTransformerArgs):
         super().__init__()
         self.args = args
-        self.fc1 = nn.Linear(args.dim, args.dim * args.ffn_dim_multiplier)
-        self.fc2 = nn.Linear(args.dim * args.ffn_dim_multiplier, args.dim)
+        mult = args.ffn_dim_multiplier if args.ffn_dim_multiplier is not None else 4.0
+        hidden = int(args.dim * mult)
+        self.fc1 = nn.Linear(args.dim, hidden)
+        self.fc2 = nn.Linear(hidden, args.dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc2(F.gelu(self.fc1(x)))
@@ -153,12 +194,14 @@ class TransformerBlock(nn.Module):
     def __init__(self, args: BaseTransformerArgs):
         super().__init__()
         self.args = args
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.attention = Attention(args)
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn = FFN(args)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = self.attention(x, mask) + x
-        x = self.ffn(x) + x
+        x = x + self.attention(self.attention_norm(x), mask)
+        x = x + self.ffn(self.ffn_norm(x))
         return x
 
 class BaseTransformer(nn.Module):
@@ -172,6 +215,7 @@ class BaseTransformer(nn.Module):
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         for block in self.transformer_blocks:
             x = block(x, mask)
+        return self.lm_head(x)
 
     def init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
@@ -183,5 +227,8 @@ class BaseTransformer(nn.Module):
         elif isinstance(module, nn.LayerNorm):
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
+        elif isinstance(module, RMSNorm) and getattr(module, "weight", None) is not None:
+            nn.init.ones_(module.weight)
+
     # we only need an init_weights function here because
     # we initialize everything here.
