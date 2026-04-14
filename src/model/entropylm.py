@@ -1,4 +1,6 @@
 """
+NOTE i think this should be changed, instead being a wrapper over the transformer.py file, we should just define a language model transformer class.
+
 small causal byte-level LM used to drive entropy-based patch boundaries (blt).
 
 training convention: logits[t] is the distribution over the next byte byte_ids[t + 1]
@@ -13,7 +15,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from blt.base_transformer import BaseTransformer, BaseTransformerArgs
+from src.model.base_transformer import BaseTransformer, BaseTransformerArgs
 
 BYTE_VOCAB = 256
 
@@ -44,6 +46,8 @@ class EntropyLM(nn.Module):
         self.args = args
         self.byte_embed = nn.Embedding(BYTE_VOCAB, args.dim, padding_idx=None)
         self.trunk = BaseTransformer(args)
+        self.norm = nn.RMSNorm(args.dim, eps=args.norm_eps)
+        self.output = nn.Linear(args.dim, BYTE_VOCAB, bias=False)
         nn.init.normal_(self.byte_embed.weight, mean=0.0, std=0.02)
 
     def forward(
@@ -52,7 +56,8 @@ class EntropyLM(nn.Module):
         if byte_ids.dtype not in (torch.long, torch.int32):
             byte_ids = byte_ids.long()
         x = self.byte_embed(byte_ids)
-        return self.trunk(x, mask=mask)
+        h = self.trunk(x, mask=mask)
+        return self.output(self.norm(h))
 
     def per_position_entropy(
         self, byte_ids: torch.Tensor, mask: Optional[torch.Tensor] = None

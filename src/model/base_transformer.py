@@ -93,7 +93,6 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
-# TODO i need to understand this better
 class RoPE(nn.Module):
     """
     rotary position embeddings applied to q and k after projection.
@@ -178,6 +177,9 @@ class Attention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(b, n_ctx, self.args.dim)
         return self.out_proj(out)
 
+        # since we want to keep this relatively close to the reference implementation,
+        # we should 
+
 class FFN(nn.Module):
     def __init__(self, args: BaseTransformerArgs):
         super().__init__()
@@ -209,13 +211,16 @@ class BaseTransformer(nn.Module):
         super().__init__()
         self.args = args
         self.transformer_blocks = nn.ModuleList([TransformerBlock(args) for _ in range(args.n_layers)])
-        self.lm_head = nn.Linear(args.dim, args.vocab_size)
         self.apply(self.init_weights)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         for block in self.transformer_blocks:
             x = block(x, mask)
-        return self.lm_head(x)
+        return x
+
+        # since we want to keep this relatively close to the reference implementation,
+        # we should only return the last hidden state, so that for any downstream application---i.e. transformer.py,
+        # we can just apply our own head, softmax, etc.
 
     def init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
