@@ -44,6 +44,7 @@ BLT_DATA_ROOT="${BLT_DATA_ROOT:-./data}"
 BLT_PREPROCESS_DIR="${BLT_PREPROCESS_DIR:-${BLT_DATA_ROOT}/preprocess}"
 BLT_ENTROPY_MODEL_NAME="${BLT_ENTROPY_MODEL_NAME:-transformer_100m}"
 BLT_FINEWEB_ENTROPY_DIR="${BLT_FINEWEB_ENTROPY_DIR:-${BLT_PREPROCESS_DIR}/fineweb_edu_10bt/${BLT_ENTROPY_MODEL_NAME}}"
+BLT_FINEWEB_DATA_DIR="${BLT_FINEWEB_DATA_DIR:-${BLT_DATA_ROOT}/fineweb_edu_10bt}"
 UV_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 
 ensure_user_writable_dir() {
@@ -149,6 +150,7 @@ FINEWEB_ARROW_FILE="${BLT_FINEWEB_ENTROPY_DIR}/${FINEWEB_CHUNK_NAME}.arrow"
 FINEWEB_COMPLETE_FILE="${FINEWEB_ARROW_FILE}.complete"
 FINEWEB_SHARD_ARROW_FILE="${BLT_FINEWEB_ENTROPY_DIR}/${FINEWEB_CHUNK_NAME}.shard_00.arrow"
 FINEWEB_SHARD_COMPLETE_FILE="${FINEWEB_SHARD_ARROW_FILE}.complete"
+FINEWEB_JSONL_FILE="${BLT_FINEWEB_DATA_DIR}/${FINEWEB_CHUNK_NAME}"
 
 echo "checking for laerdon's ssh key"
 mkdir -p "${HOME}/.ssh"
@@ -167,6 +169,30 @@ scp -i "${LAERDON_SSH_KEY}" \
 echo "renaming fineweb_edu_10bt arrow files to shard format"
 mv -f "${FINEWEB_ARROW_FILE}" "${FINEWEB_SHARD_ARROW_FILE}"
 mv -f "${FINEWEB_COMPLETE_FILE}" "${FINEWEB_SHARD_COMPLETE_FILE}"
+
+echo "reconstructing fineweb_edu_10bt jsonl chunk from arrow"
+mkdir -p "${BLT_FINEWEB_DATA_DIR}"
+python - "${FINEWEB_SHARD_ARROW_FILE}" "${FINEWEB_JSONL_FILE}" <<'PY'
+import json
+import sys
+
+import pyarrow.dataset as ds
+
+arrow_path, jsonl_path = sys.argv[1], sys.argv[2]
+dataset = ds.dataset([arrow_path], format="arrow")
+
+with open(jsonl_path, "w", encoding="utf-8") as out_f:
+    for batch in dataset.to_batches():
+        columns = batch.to_pydict()
+        for sample_id, text in zip(columns["sample_id"], columns["text"]):
+            out_f.write(
+                json.dumps(
+                    {"sample_id": str(sample_id), "text": text},
+                    ensure_ascii=False,
+                )
+            )
+            out_f.write("\n")
+PY
 
 echo "verification:"
 python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'available:', torch.cuda.is_available())"
