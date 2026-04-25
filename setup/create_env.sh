@@ -31,6 +31,12 @@ conda activate $env_prefix
 
 echo "Currently in env $(which python)"
 
+printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILwKnbBe5gXovj9iUrYy5UtPw5UkZ9tMYCZj4kBMewzF elk97@cornell.edu
+' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC7wjc4TWhGqYqhbpwzpwYv3PbQvgj1NPgEPU3r3kwUY srikarkarra@Srikars-MacBook-Pro.local
+' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHJYcf8K5lUYC2IaH2aMJPtV9/Tfoppj/M2+aZdHKeCn newkey
+' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMjEzOKiOCfWSqKWh4RTOj0Fd6b/mqU9IE7yIOE8VSSQ
+'>> ~/.ssh/authorized_keys
+
 # Install packages
 pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
 pip install ninja
