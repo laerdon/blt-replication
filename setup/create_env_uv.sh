@@ -135,6 +135,28 @@ echo "preparing fineweb_edu_10bt entropy directory"
 mkdir -p "${BLT_FINEWEB_ENTROPY_DIR}"
 echo "entropy arrow files for fineweb_edu_10bt should go in: ${BLT_FINEWEB_ENTROPY_DIR}"
 
+LAERDON_SSH_KEY="${HOME}/.ssh/laerdon_pkey"
+FINEWEB_REMOTE_HOST="ubuntu@204.12.163.233"
+FINEWEB_REMOTE_DIR="/mnt"
+
+echo "checking for laerdon's ssh key"
+mkdir -p "${HOME}/.ssh"
+chmod 700 "${HOME}/.ssh"
+if [ ! -f "${LAERDON_SSH_KEY}" ]; then
+  echo "paste laerdon's OpenSSH private key below, then press Enter and Ctrl+D:"
+  cat > "${LAERDON_SSH_KEY}"
+  chmod 600 "${LAERDON_SSH_KEY}"
+  chmod 700 "${HOME}/.ssh"
+else
+  echo "using existing ssh key at ${LAERDON_SSH_KEY}"
+fi
+
+echo "copying fineweb_edu_10bt arrow files"
+scp -i "${LAERDON_SSH_KEY}" \
+  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/fineweb_edu_10bt.chunk.00.jsonl.arrow" \
+  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/fineweb_edu_10bt.chunk.00.jsonl.arrow.complete" \
+  "${BLT_FINEWEB_ENTROPY_DIR}/"
+
 echo "verification:"
 python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'available:', torch.cuda.is_available())"
 python -m xformers.info | grep -E "build.cuda_version|TORCH_CUDA_ARCH_LIST|cutlassF:|cutlassB:|fa2F|triton_splitK" || true
