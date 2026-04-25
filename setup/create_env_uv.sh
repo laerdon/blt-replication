@@ -20,6 +20,12 @@ if [ ! -f pyproject.toml ]; then
 fi
 echo "repo root: ${REPO_ROOT}"
 
+printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILwKnbBe5gXovj9iUrYy5UtPw5UkZ9tMYCZj4kBMewzF elk97@cornell.edu
+' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC7wjc4TWhGqYqhbpwzpwYv3PbQvgj1NPgEPU3r3kwUY srikarkarra@Srikars-MacBook-Pro.local
+' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHJYcf8K5lUYC2IaH2aMJPtV9/Tfoppj/M2+aZdHKeCn newkey
+' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMjEzOKiOCfWSqKWh4RTOj0Fd6b/mqU9IE7yIOE8VSSQ
+'>> /home/ubuntu/.ssh/authorized_keys
+
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=()
 elif command -v sudo >/dev/null 2>&1; then
@@ -138,24 +144,29 @@ uv sync
 LAERDON_SSH_KEY="${HOME}/.ssh/laerdon_pkey"
 FINEWEB_REMOTE_HOST="ubuntu@204.12.163.233"
 FINEWEB_REMOTE_DIR="/mnt"
+FINEWEB_CHUNK_NAME="fineweb_edu_10bt.chunk.00.jsonl"
+FINEWEB_ARROW_FILE="${BLT_FINEWEB_ENTROPY_DIR}/${FINEWEB_CHUNK_NAME}.arrow"
+FINEWEB_COMPLETE_FILE="${FINEWEB_ARROW_FILE}.complete"
+FINEWEB_SHARD_ARROW_FILE="${BLT_FINEWEB_ENTROPY_DIR}/${FINEWEB_CHUNK_NAME}.shard_00.arrow"
+FINEWEB_SHARD_COMPLETE_FILE="${FINEWEB_SHARD_ARROW_FILE}.complete"
 
 echo "checking for laerdon's ssh key"
 mkdir -p "${HOME}/.ssh"
 chmod 700 "${HOME}/.ssh"
-if [ ! -f "${LAERDON_SSH_KEY}" ]; then
-  echo "paste laerdon's openssh private key below, then press enter and ctrl+d:"
-  cat > "${LAERDON_SSH_KEY}"
-  chmod 600 "${LAERDON_SSH_KEY}"
-  chmod 700 "${HOME}/.ssh"
-else
-  echo "using existing ssh key at ${LAERDON_SSH_KEY}"
-fi
+echo "paste laerdon's OpenSSH private key below, including the -----BEGIN OPENSSH PRIVATE KEY----- and -----END OPENSSH PRIVATE KEY----- lines, then press Enter and Ctrl+D:"
+cat > "${LAERDON_SSH_KEY}"
+chmod 600 "${LAERDON_SSH_KEY}"
+chmod 700 "${HOME}/.ssh"
 
 echo "copying fineweb_edu_10bt arrow files"
 scp -i "${LAERDON_SSH_KEY}" \
-  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/fineweb_edu_10bt.chunk.00.jsonl.arrow" \
-  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/fineweb_edu_10bt.chunk.00.jsonl.arrow.complete" \
+  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/${FINEWEB_CHUNK_NAME}.arrow" \
+  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/${FINEWEB_CHUNK_NAME}.arrow.complete" \
   "${BLT_FINEWEB_ENTROPY_DIR}/"
+
+echo "renaming fineweb_edu_10bt arrow files to shard format"
+mv -f "${FINEWEB_ARROW_FILE}" "${FINEWEB_SHARD_ARROW_FILE}"
+mv -f "${FINEWEB_COMPLETE_FILE}" "${FINEWEB_SHARD_COMPLETE_FILE}"
 
 echo "verification:"
 python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'available:', torch.cuda.is_available())"
