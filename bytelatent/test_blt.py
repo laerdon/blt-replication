@@ -13,6 +13,7 @@ from bytelatent.model.blt import (
     ByteLatentTransformer,
     ByteLatentTransformerArgs,
     EmbeddingType,
+    combine_forward_sliding_trigram_embeddings_with_learnable_weights,
     compute_hash_embeddings,
     create_global_transformer,
     create_local_decoder,
@@ -111,6 +112,37 @@ def create_args(cross_attention=False):
         eos_id=EOS_ID,
     )
     return transformer_args
+
+
+def test_forward_sliding_trigram_uses_previous_six_windows():
+    tokens = torch.arange(11, dtype=torch.int64).unsqueeze(0)  # [1, 11]
+    local_encoder_embeds = torch.zeros((1, 11, 1), dtype=torch.float32)
+
+    sliding_trigram_embedding = torch.nn.ModuleList(
+        [torch.nn.Embedding(32, 1), torch.nn.Embedding(32, 1)]
+    )
+    with torch.no_grad():
+        sliding_trigram_embedding[0].weight.fill_(1.0)
+        sliding_trigram_embedding[1].weight.fill_(2.0)
+
+    # Per-trigram contribution = 0.5 * 1.0 + 1.5 * 2.0 = 3.5
+    sliding_trigram_weights = torch.nn.Parameter(
+        torch.tensor([0.5, 1.5], dtype=torch.float32)
+    )
+
+    output = combine_forward_sliding_trigram_embeddings_with_learnable_weights(
+        local_encoder_tokens=tokens,
+        local_encoder_embeds=local_encoder_embeds,
+        sliding_trigram_embedding=sliding_trigram_embedding,
+        sliding_trigram_weights=sliding_trigram_weights,
+    )
+
+    expected_counts = torch.tensor(
+        [0, 0, 1, 2, 3, 4, 5, 6, 6, 6, 6], dtype=torch.float32
+    )
+    expected = expected_counts * 3.5
+    torch.testing.assert_close(output[0, :, 0], expected)
+    assert output[0, 10, 0].item() == pytest.approx(21.0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
