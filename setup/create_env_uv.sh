@@ -72,9 +72,6 @@ ensure_user_writable_dir() {
   fi
 }
 
-# gpu arch. a6000=8.6, a100=8.0, rtx 4090=8.9, h100=9.0. adjust if needed.
-export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
-
 echo "preparing fineweb_edu_10bt entropy directory"
 mkdir -p "${BLT_FINEWEB_ENTROPY_DIR}"
 echo "entropy arrow files for fineweb_edu_10bt should go in: ${BLT_FINEWEB_ENTROPY_DIR}"
@@ -153,6 +150,30 @@ echo "[5/7] installing pre_build group (torch, setuptools, ninja)"
 uv pip install --group pre_build --no-build-isolation
 
 echo "[6/7] building xformers from source with cuda"
+# Detect the GPU arch from the actual machine unless the user already
+# overrode TORCH_CUDA_ARCH_LIST explicitly.
+if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
+  if DETECTED_TORCH_CUDA_ARCH_LIST="$(
+    python - <<'PY'
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit(1)
+
+major, minor = torch.cuda.get_device_capability(0)
+print(f"{major}.{minor}")
+PY
+  )"; then
+    export TORCH_CUDA_ARCH_LIST="${DETECTED_TORCH_CUDA_ARCH_LIST}"
+    echo "detected TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} from GPU 0"
+  else
+    export TORCH_CUDA_ARCH_LIST="8.6"
+    echo "warning: could not detect GPU compute capability; defaulting TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
+  fi
+else
+  echo "using user-provided TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
+fi
+
 # flags consumed by xformers' setup.py during the compile step
 export FORCE_CUDA=1
 export XFORMERS_BUILD_TYPE=Release
