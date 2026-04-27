@@ -38,7 +38,8 @@ else
 fi
 
 # where to download the cuda runfile (needs ~5gb free; /tmp often too small)
-CUDA_DOWNLOAD_DIR="${CUDA_DOWNLOAD_DIR:-/mnt}"
+# use a writable subdirectory instead of /mnt itself, since /mnt is often root-owned.
+CUDA_DOWNLOAD_DIR="${CUDA_DOWNLOAD_DIR:-/mnt/cuda-downloads}"
 CUDA_INSTALL_PATH="/usr/local/cuda-12.1"
 CUDA_RUNFILE="cuda_12.1.1_530.30.02_linux.run"
 CUDA_URL="https://developer.download.nvidia.com/compute/cuda/12.1.1/local_installers/${CUDA_RUNFILE}"
@@ -47,6 +48,13 @@ BLT_PREPROCESS_DIR="${BLT_PREPROCESS_DIR:-${BLT_DATA_ROOT}/preprocess}"
 BLT_ENTROPY_MODEL_NAME="${BLT_ENTROPY_MODEL_NAME:-transformer_100m}"
 BLT_FINEWEB_ENTROPY_DIR="${BLT_FINEWEB_ENTROPY_DIR:-${BLT_PREPROCESS_DIR}/fineweb_edu_10bt/${BLT_ENTROPY_MODEL_NAME}}"
 BLT_FINEWEB_DATA_DIR="${BLT_FINEWEB_DATA_DIR:-${BLT_DATA_ROOT}/fineweb_edu_10bt}"
+BLT_SHUFFLED_DATASET_NAME="${BLT_SHUFFLED_DATASET_NAME:-fineweb_edu_10bt_shuffled}"
+BLT_SHUFFLE_VAL_FRACTION="${BLT_SHUFFLE_VAL_FRACTION:-0.01}"
+BLT_SHUFFLE_SEED="${BLT_SHUFFLE_SEED:-42}"
+# Default to 1 train shard for 1-GPU runs. Increase this later to match the
+# number of GPUs/chunks you want the training loader to consume.
+BLT_SHUFFLE_NUM_TRAIN_SHARDS="${BLT_SHUFFLE_NUM_TRAIN_SHARDS:-1}"
+BLT_SHUFFLE_NUM_VAL_SHARDS="${BLT_SHUFFLE_NUM_VAL_SHARDS:-1}"
 UV_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 
 ensure_user_writable_dir() {
@@ -73,14 +81,25 @@ echo "entropy arrow files for fineweb_edu_10bt should go in: ${BLT_FINEWEB_ENTRO
 
 echo "[1/7] installing system build dependencies"
 "${SUDO[@]}" apt-get update
-"${SUDO[@]}" apt-get install -y \
+if ! "${SUDO[@]}" apt-get install -y \
   build-essential \
   gcc-12 \
   g++-12 \
   ninja-build \
   wget \
   curl \
-  git
+  git; then
+  echo "apt install hit unmet dependencies; attempting apt-get --fix-broken install"
+  "${SUDO[@]}" apt-get --fix-broken install -y
+  "${SUDO[@]}" apt-get install -y \
+    build-essential \
+    gcc-12 \
+    g++-12 \
+    ninja-build \
+    wget \
+    curl \
+    git
+fi
 
 # point gcc/g++ at version 12 for the cuda build. cuda 12.1 supports gcc <= 12.
 export CC=gcc-12
@@ -89,7 +108,7 @@ export CXX=g++-12
 echo "[2/7] checking cuda 12.1 toolkit"
 if [ ! -x "${CUDA_INSTALL_PATH}/bin/nvcc" ]; then
   echo "installing cuda 12.1 toolkit to ${CUDA_INSTALL_PATH}"
-  mkdir -p "${CUDA_DOWNLOAD_DIR}"
+  ensure_user_writable_dir "${CUDA_DOWNLOAD_DIR}"
   if [ ! -f "${CUDA_DOWNLOAD_DIR}/${CUDA_RUNFILE}" ]; then
     wget --continue -O "${CUDA_DOWNLOAD_DIR}/${CUDA_RUNFILE}" "${CUDA_URL}"
   fi
@@ -157,10 +176,19 @@ FINEWEB_JSONL_FILE="${BLT_FINEWEB_DATA_DIR}/${FINEWEB_CHUNK_NAME}"
 echo "checking for laerdon's ssh key"
 mkdir -p "${HOME}/.ssh"
 chmod 700 "${HOME}/.ssh"
-echo "paste laerdon's OpenSSH private key below, including the -----BEGIN OPENSSH PRIVATE KEY----- and -----END OPENSSH PRIVATE KEY----- lines, then press Enter and Ctrl+D:"
-cat > "${LAERDON_SSH_KEY}"
+if [ ! -f "${LAERDON_SSH_KEY}" ]; then
+  echo "error: expected laerdon's key at ${LAERDON_SSH_KEY}"
+  echo "copy it from your local machine first, then rerun this script"
+  echo "example:"
+  echo "  scp -P <port> -i ~/.ssh/<instance-login-key> ~/.ssh/laerdon_pkey $(id -un)@<instance-ip>:~/.ssh/laerdon_pkey"
+  exit 1
+fi
 chmod 600 "${LAERDON_SSH_KEY}"
 chmod 700 "${HOME}/.ssh"
+if ! ssh-keygen -y -f "${LAERDON_SSH_KEY}" >/dev/null 2>&1; then
+  echo "error: ${LAERDON_SSH_KEY} is not a valid SSH private key"
+  exit 1
+fi
 
 echo "copying fineweb_edu_10bt arrow files"
 scp -i "${LAERDON_SSH_KEY}" \
@@ -175,6 +203,17 @@ mv -f "${FINEWEB_COMPLETE_FILE}" "${FINEWEB_SHARD_COMPLETE_FILE}"
 echo "reconstructing fineweb_edu_10bt jsonl chunk from arrow"
 mkdir -p "${BLT_FINEWEB_DATA_DIR}"
 bash "${SCRIPT_DIR}/arrow_to_jsonl.sh" "${FINEWEB_SHARD_ARROW_FILE}" "${FINEWEB_JSONL_FILE}"
+
+echo "creating shuffled train/val split for fineweb_edu_10bt"
+bash "${SCRIPT_DIR}/shuffle_split_arrow.sh" \
+  --input-dataset-name fineweb_edu_10bt \
+  --dataset-name "${BLT_SHUFFLED_DATASET_NAME}" \
+  --entropy-model-name "${BLT_ENTROPY_MODEL_NAME}" \
+  --val-fraction "${BLT_SHUFFLE_VAL_FRACTION}" \
+  --seed "${BLT_SHUFFLE_SEED}" \
+  --num-train-shards "${BLT_SHUFFLE_NUM_TRAIN_SHARDS}" \
+  --num-val-shards "${BLT_SHUFFLE_NUM_VAL_SHARDS}" \
+  --overwrite
 
 echo "verification:"
 python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'available:', torch.cuda.is_available())"
