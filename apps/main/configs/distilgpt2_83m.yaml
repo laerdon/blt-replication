@@ -1,6 +1,6 @@
 # dump_dir: !!!CHANGE_THIS!!!
 name: distilgpt2_83m_baseline
-steps: 60_000
+steps: 400
 probe_freq: null
 seed: 777
 
@@ -53,10 +53,10 @@ profiling:
 
 checkpoint:
   dump:
-    every: 2500
+    every: 200
     keep: 3
   eval:
-    every: 5000
+    every: 40
     keep: -1
 
 logging:
