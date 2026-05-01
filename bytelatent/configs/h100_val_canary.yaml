@@ -1,4 +1,4 @@
-# H100-friendly local canary for shuffled fineweb training with in-process
+# H100-friendly local canary for fineweb mix training with in-process
 # validation. This is meant to answer:
 # 1. does training on the shuffled split work?
 # 2. can we hit validation checkpoints and get val bpb?
@@ -7,13 +7,16 @@ config: bytelatent/configs/debug.yaml
 
 dump_dir: ./runs/h100_val_canary
 name: h100_val_canary
-steps: 80
-max_steps: 80
+steps: 400
+max_steps: 400
 seed: 777
 
 optim:
-  # Short warmup so the canary can show movement within ~100 steps.
+  lr: 3e-3
+  weight_decay: 0.033
   warmup: 20
+  lr_min_ratio: 0.000001
+  clip: 1.0
 
 distributed:
   matmul_allow_tf32: true
@@ -21,7 +24,7 @@ distributed:
 data:
   root_dir: ./data
   sources:
-    fineweb_edu_10bt_shuffled: 1.0
+    fineweb_edu_10bt_mix_1p7bt: 1.0
   preprocess_dir: ./data/preprocess
   tokenizer_args:
     name: blt
@@ -47,9 +50,9 @@ eval:
   run_tasks: false
   consolidate_if_needed: true
   validation:
-    root_dir: ./data/validation/fineweb_edu_10bt_shuffled/transformer_100m
+    root_dir: ./data/validation/fineweb_edu_10bt_mix_1p7bt/transformer_100m
     sources:
-      - fineweb_edu_10bt_shuffled.val.shard_00.arrow
+      - fineweb_edu_10bt.validation.05_06_07.5m.arrow
     # Keep the canary validation cheap while still giving a meaningful signal.
     max_n_batches: 16
     batch_size: 2

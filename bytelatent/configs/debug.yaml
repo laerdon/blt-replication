@@ -70,7 +70,7 @@ model:
 data:
   root_dir: ./data
   sources:
-    fineweb_edu_10bt: 1.0
+    fineweb_edu_10bt_mix_1p7bt: 1.0
   batch_size: 2
   prefetch_size: 64
   seq_len: 4096
@@ -96,4 +96,13 @@ logging:
   freq: 10
 
 eval_on_gpus: 8
-eval: null
+eval:
+  run_ppl: true
+  run_tasks: false
+  consolidate_if_needed: true
+  validation:
+    root_dir: ./data/validation/fineweb_edu_10bt_mix_1p7bt/transformer_100m
+    sources:
+      - fineweb_edu_10bt.validation.05_06_07.5m.arrow
+    max_n_batches: 16
+    batch_size: 2

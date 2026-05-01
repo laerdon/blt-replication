@@ -1,20 +1,25 @@
-dump_dir: ./runs/distilgpt2_83m
-name: distilgpt2_83m_baseline
-steps: 400
-max_steps: 400
+# distilgpt2-shaped baseline matched to bytelatent/configs/h100_fineweb_1p7b.yaml.
+#
+# token budget math for the current 2-gpu launch:
+#   1024 seq_len * 32 batch_size * 2 data-parallel ranks = 65,536 tokens/step
+#   1,700,000,000 / 65,536 = 25,939.5 steps
+dump_dir: ./runs/distilgpt2_83m_fineweb_1p7b_bs32
+name: distilgpt2_83m_fineweb_1p7b_bs32
+steps: 25940
+max_steps: 25940
 probe_freq: null
 seed: 777
 
 optim:
-  lr: 2e-4
+  lr: 3e-4
   weight_decay: 0.033
-  warmup: 20
+  warmup: 1297
   lr_min_ratio: 0.000001
   clip: 1.0
 
 distributed:
   fsdp_type: full_shard
-  compile: true
+  compile: false
   model_dtype: bf16
   matmul_allow_tf32: true
   selective_activation_checkpointing: false
@@ -32,19 +37,18 @@ entropy_model:
   multiple_of: 256
   weight_tying: true
   attn_impl: xformers
+  attn_bias_type: block_causal
 
 data:
   root_dir: ./data
   sources:
     fineweb_edu_10bt_mix_1p7bt: 1.0
-  # batch_size * seq_len matches the blt canary's 2 * 4096 token budget per rank.
-  batch_size: 8
-  prefetch_size: 1024
+  # keep per-step positions matched to the blt run while respecting distilgpt2 context length.
+  batch_size: 32
+  prefetch_size: 64
   seq_len: 1024
   max_encoder_seq_length: 1024
   load_async: true
-  add_bos: true
-  add_eos: true
   preprocess_dir: ./data/preprocess
   add_patches: false
   patcher_args:
@@ -52,28 +56,24 @@ data:
   tokenizer_args:
     name: tiktoken
     init_kwargs:
-      # distilgpt2 uses the gpt-2 bpe vocabulary; keep the local artifact named for the run.
       model_path: tokenizers/distilgpt2.tiktoken
 
 profiling:
   run: false
-  mem_warmup: 0
-  mem_steps: 4
-  profile_warmup: 100
-  profile_steps: 4
 
 checkpoint:
   dump:
-    every: 40
+    every: 1297
     keep: 2
   eval:
-    every: 40
+    every: 1297
     keep: -1
 
 logging:
-  freq: 10
+  freq: 25
 
 async_eval_gpus: null
+eval_on_gpus: null
 eval:
   run_ppl: true
   run_tasks: false
@@ -82,8 +82,8 @@ eval:
     root_dir: ./data/validation/fineweb_edu_10bt_mix_1p7bt/transformer_100m
     sources:
       - fineweb_edu_10bt.validation.05_06_07.5m.arrow
-    max_n_batches: 16
+    max_n_batches: 15
     batch_size: 2
   generator:
-    max_tokens: 4096
+    max_tokens: 1024
     dtype: bf16

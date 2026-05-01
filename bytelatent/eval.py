@@ -189,6 +189,7 @@ def eval_ppl_on_path(
     packing_iterator = PackingIterator(sequence_iterator, packing_args=packing_args)
     total_loss = 0.0
     n_bytes = 0
+    tokenizer = tokenizer_args.build()
     batch_iterator = packing_iterator.create_iter()
     for i, batch in enumerate(batch_iterator):
         if i == max_n_batches:
@@ -210,6 +211,34 @@ def eval_ppl_on_path(
                 pred.flatten(0, 1), y.flatten(0, 1), reduction="sum", ignore_index=0
             )
             total_loss += loss.item()
+        elif tokenizer_args.name in ["sp", "tiktoken"]:
+            if mask is None:
+                for example in batch.y:
+                    target_tokens = tokenizer.decode(example.tolist(), cut_at_eos=False)
+                    n_bytes += (
+                        len(bytes(target_tokens, encoding="utf-8", errors="ignore"))
+                        + sum(example == tokenizer.eos_id)
+                        + sum(example == tokenizer.bos_id)
+                    )
+            else:
+                for example, example_mask in zip(batch.y, batch.mask):
+                    target = example[example_mask]
+                    target_tokens = tokenizer.decode(target.tolist(), cut_at_eos=False)
+                    n_bytes += (
+                        len(bytes(target_tokens, encoding="utf-8", errors="ignore"))
+                        + sum(target == tokenizer.eos_id)
+                        + sum(target == tokenizer.bos_id)
+                    )
+            pred = model(x)
+            tok_loss = F.cross_entropy(
+                pred.flatten(0, 1),
+                y.flatten(0, 1),
+                reduction="none",
+                ignore_index=packing_args.pad_id,
+            )
+            if mask is not None:
+                tok_loss = tok_loss * mask.flatten()
+            total_loss += tok_loss.sum().item()
         else:
             raise NotImplementedError()
     all_n_bytes = to_py_num(dist_sum(n_bytes))
@@ -329,11 +358,11 @@ def launch_eval(eval_args: EvalArgs):
 
     if get_global_rank() == 0:
         with fs.open(os.path.join(eval_args.dump_dir, "results.json"), "w") as f:
-            f.write(json.dumps(results))
+            f.write(json.dumps(results, default=to_py_num))
         logger.info(f"All evaluation results: {results}")
         if ppl_results is not None:
             with fs.open(os.path.join(eval_args.dump_dir, "validation.json"), "w") as f:
-                f.write(json.dumps(ppl_results))
+                f.write(json.dumps(ppl_results, default=to_py_num))
             logger.info(f"All validation results: {ppl_results}")
 
     if eval_args.metric_log_dir and get_global_rank() == 0:
@@ -346,7 +375,7 @@ def launch_eval(eval_args: EvalArgs):
         if eval_args.global_step is not None:
             timestamp["global_step"] = eval_args.global_step
         print(
-            json.dumps(timestamp | results),
+            json.dumps(timestamp | results, default=to_py_num),
             file=fs.open(metric_log_path, mode="a"),
             flush=True,
         )
@@ -356,7 +385,7 @@ def launch_eval(eval_args: EvalArgs):
         )
         if ppl_results is not None:
             print(
-                json.dumps(timestamp | ppl_results),
+                json.dumps(timestamp | ppl_results, default=to_py_num),
                 file=fs.open(val_log_path, mode="a"),
                 flush=True,
             )

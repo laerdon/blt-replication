@@ -95,7 +95,7 @@ class LMTransformer(
         )
 
         if args.weight_tying:
-            self.output.weight = self.embeddings.tok_embeddings.weight
+            self.output.weight = self.tok_embeddings.weight
 
     def push_to_hub(self, *args, **kwargs):
         raise ValueError(

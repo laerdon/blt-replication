@@ -192,8 +192,8 @@ def dist_mean_dict(x):
     return r
 
 
-def to_py_num(num: int | float | torch.Tensor | np.ndarray) -> int | float:
-    if isinstance(num, (torch.Tensor, np.ndarray)):
+def to_py_num(num: int | float | torch.Tensor | np.ndarray | np.generic) -> int | float:
+    if isinstance(num, (torch.Tensor, np.ndarray, np.generic)):
         return num.item()
     else:
         return num

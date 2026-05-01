@@ -1,0 +1,42 @@
+# h100 blt run over roughly 1.7b training tokens.
+#
+# token budget math for the current 2-gpu launch:
+#   4096 seq_len * 2 batch_size * 2 data-parallel ranks = 16,384 tokens/step
+#   1,700,000,000 / 16,384 = 103,759.8 steps
+#
+# validation budget:
+#   validation shard text bytes: 14,998,789
+#   15 eval batches * 2 batch_size * 2 ranks * 12,288 bytes = 737,280 bytes/eval
+#   20 evals * 737,280 = 14,745,600 bytes, which fits in the validation shard
+#   note: the current eval path reuses the same validation prefix each checkpoint;
+#   this budget is for non-overlapping windows if validation offsets are rotated.
+config: bytelatent/configs/h100_val_canary.yaml
+
+dump_dir: ./runs/h100_fineweb_1p7b
+name: h100_fineweb_1p7b
+steps: 103760
+max_steps: 103760
+seed: 777
+
+optim:
+  lr: 3e-3
+  weight_decay: 0.033
+  warmup: 5188
+  lr_min_ratio: 0.000001
+  clip: 1.0
+
+checkpoint:
+  dump:
+    every: 5188
+    keep: 2
+  eval:
+    every: 5188
+    keep: -1
+
+logging:
+  freq: 100
+
+eval:
+  validation:
+    max_n_batches: 15
+    batch_size: 2

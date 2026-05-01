@@ -226,6 +226,11 @@ class MultiprocessIterator(StatefulIterator):
             )
 
         self.base_iterator = base_iterator_state.build()
+        self.producer.join(timeout=5)
+        if self.producer.is_alive():
+            logging.warning("main thread: producer still alive after state dump, terminating")
+            self.producer.terminate()
+            self.producer.join(timeout=5)
         self.producer.close()
         self.producer = None
         self.batch_queue = None

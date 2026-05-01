@@ -46,15 +46,10 @@ CUDA_URL="https://developer.download.nvidia.com/compute/cuda/12.1.1/local_instal
 BLT_DATA_ROOT="${BLT_DATA_ROOT:-./data}"
 BLT_PREPROCESS_DIR="${BLT_PREPROCESS_DIR:-${BLT_DATA_ROOT}/preprocess}"
 BLT_ENTROPY_MODEL_NAME="${BLT_ENTROPY_MODEL_NAME:-transformer_100m}"
-BLT_FINEWEB_ENTROPY_DIR="${BLT_FINEWEB_ENTROPY_DIR:-${BLT_PREPROCESS_DIR}/fineweb_edu_10bt/${BLT_ENTROPY_MODEL_NAME}}"
-BLT_FINEWEB_DATA_DIR="${BLT_FINEWEB_DATA_DIR:-${BLT_DATA_ROOT}/fineweb_edu_10bt}"
-BLT_SHUFFLED_DATASET_NAME="${BLT_SHUFFLED_DATASET_NAME:-fineweb_edu_10bt_shuffled}"
-BLT_SHUFFLE_VAL_FRACTION="${BLT_SHUFFLE_VAL_FRACTION:-0.01}"
-BLT_SHUFFLE_SEED="${BLT_SHUFFLE_SEED:-42}"
-# Default to 1 train shard for 1-GPU runs. Increase this later to match the
-# number of GPUs/chunks you want the training loader to consume.
-BLT_SHUFFLE_NUM_TRAIN_SHARDS="${BLT_SHUFFLE_NUM_TRAIN_SHARDS:-1}"
-BLT_SHUFFLE_NUM_VAL_SHARDS="${BLT_SHUFFLE_NUM_VAL_SHARDS:-1}"
+BLT_TRAIN_DATASET_NAME="${BLT_TRAIN_DATASET_NAME:-fineweb_edu_10bt_mix_1p7bt}"
+BLT_TRAIN_DIR="${BLT_TRAIN_DIR:-${BLT_PREPROCESS_DIR}/${BLT_TRAIN_DATASET_NAME}/${BLT_ENTROPY_MODEL_NAME}}"
+BLT_VALIDATION_DIR="${BLT_VALIDATION_DIR:-${BLT_DATA_ROOT}/validation/${BLT_TRAIN_DATASET_NAME}/${BLT_ENTROPY_MODEL_NAME}}"
+BLT_TRAIN_SOURCE_DIR="${BLT_TRAIN_SOURCE_DIR:-${BLT_DATA_ROOT}/${BLT_TRAIN_DATASET_NAME}}"
 UV_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 
 ensure_user_writable_dir() {
@@ -72,9 +67,10 @@ ensure_user_writable_dir() {
   fi
 }
 
-echo "preparing fineweb_edu_10bt entropy directory"
-mkdir -p "${BLT_FINEWEB_ENTROPY_DIR}"
-echo "entropy arrow files for fineweb_edu_10bt should go in: ${BLT_FINEWEB_ENTROPY_DIR}"
+echo "preparing fineweb_edu_10bt train and validation directories"
+mkdir -p "${BLT_TRAIN_DIR}" "${BLT_VALIDATION_DIR}" "${BLT_TRAIN_SOURCE_DIR}"
+echo "train arrow files should go in: ${BLT_TRAIN_DIR}"
+echo "validation arrow files should go in: ${BLT_VALIDATION_DIR}"
 
 echo "[1/7] installing system build dependencies"
 "${SUDO[@]}" apt-get update
@@ -185,14 +181,14 @@ echo "[7/7] syncing remaining project dependencies"
 uv sync
 
 LAERDON_SSH_KEY="${HOME}/.ssh/laerdon_pkey"
-FINEWEB_REMOTE_HOST="ubuntu@204.12.163.233"
+FINEWEB_REMOTE_HOST="ubuntu@204.12.169.234"
 FINEWEB_REMOTE_DIR="/mnt"
-FINEWEB_CHUNK_NAME="fineweb_edu_10bt.chunk.00.jsonl"
-FINEWEB_ARROW_FILE="${BLT_FINEWEB_ENTROPY_DIR}/${FINEWEB_CHUNK_NAME}.arrow"
-FINEWEB_COMPLETE_FILE="${FINEWEB_ARROW_FILE}.complete"
-FINEWEB_SHARD_ARROW_FILE="${BLT_FINEWEB_ENTROPY_DIR}/${FINEWEB_CHUNK_NAME}.shard_00.arrow"
-FINEWEB_SHARD_COMPLETE_FILE="${FINEWEB_SHARD_ARROW_FILE}.complete"
-FINEWEB_JSONL_FILE="${BLT_FINEWEB_DATA_DIR}/${FINEWEB_CHUNK_NAME}"
+FINEWEB_TRAIN_REMOTE_FILE="fineweb_edu_10bt_mix_1p7bt.chunk.00.jsonl.shard_00.arrow"
+FINEWEB_VALIDATION_REMOTE_FILE="fineweb_edu_10bt.validation.05_06_07.5m.arrow"
+FINEWEB_TRAIN_CHUNK_NAME="${FINEWEB_TRAIN_REMOTE_FILE%.shard_00.arrow}"
+FINEWEB_TRAIN_ARROW_FILE="${BLT_TRAIN_DIR}/${FINEWEB_TRAIN_REMOTE_FILE}"
+FINEWEB_VALIDATION_ARROW_FILE="${BLT_VALIDATION_DIR}/${FINEWEB_VALIDATION_REMOTE_FILE}"
+FINEWEB_SOURCE_PLACEHOLDER="${BLT_TRAIN_SOURCE_DIR}/${FINEWEB_TRAIN_CHUNK_NAME}"
 
 echo "checking for laerdon's ssh key"
 mkdir -p "${HOME}/.ssh"
@@ -211,33 +207,66 @@ if ! ssh-keygen -y -f "${LAERDON_SSH_KEY}" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "copying fineweb_edu_10bt arrow files"
+echo "copying fineweb_edu_10bt train and validation arrow files"
+mkdir -p "${BLT_TRAIN_DIR}" "${BLT_VALIDATION_DIR}" "${BLT_TRAIN_SOURCE_DIR}"
 scp -i "${LAERDON_SSH_KEY}" \
-  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/${FINEWEB_CHUNK_NAME}.arrow" \
-  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/${FINEWEB_CHUNK_NAME}.arrow.complete" \
-  "${BLT_FINEWEB_ENTROPY_DIR}/"
+  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/${FINEWEB_TRAIN_REMOTE_FILE}" \
+  "${FINEWEB_TRAIN_ARROW_FILE}"
+scp -i "${LAERDON_SSH_KEY}" \
+  "${FINEWEB_REMOTE_HOST}:${FINEWEB_REMOTE_DIR}/${FINEWEB_VALIDATION_REMOTE_FILE}" \
+  "${FINEWEB_VALIDATION_ARROW_FILE}"
 
-echo "renaming fineweb_edu_10bt arrow files to shard format"
-mv -f "${FINEWEB_ARROW_FILE}" "${FINEWEB_SHARD_ARROW_FILE}"
-mv -f "${FINEWEB_COMPLETE_FILE}" "${FINEWEB_SHARD_COMPLETE_FILE}"
+echo "validating fineweb_edu_10bt arrow file formats"
+TRAIN_ARROW_FILE="${FINEWEB_TRAIN_ARROW_FILE}" VALIDATION_ARROW_FILE="${FINEWEB_VALIDATION_ARROW_FILE}" python - <<'PY'
+import os
+from pathlib import Path
 
-echo "reconstructing fineweb_edu_10bt jsonl chunk from arrow"
-mkdir -p "${BLT_FINEWEB_DATA_DIR}"
-bash "${SCRIPT_DIR}/arrow_to_jsonl.sh" "${FINEWEB_SHARD_ARROW_FILE}" "${FINEWEB_JSONL_FILE}"
+import pyarrow as pa
 
-echo "creating shuffled train/val split for fineweb_edu_10bt"
-bash "${SCRIPT_DIR}/shuffle_split_arrow.sh" \
-  --input-dataset-name fineweb_edu_10bt \
-  --dataset-name "${BLT_SHUFFLED_DATASET_NAME}" \
-  --entropy-model-name "${BLT_ENTROPY_MODEL_NAME}" \
-  --val-fraction "${BLT_SHUFFLE_VAL_FRACTION}" \
-  --seed "${BLT_SHUFFLE_SEED}" \
-  --num-train-shards "${BLT_SHUFFLE_NUM_TRAIN_SHARDS}" \
-  --num-val-shards "${BLT_SHUFFLE_NUM_VAL_SHARDS}" \
-  --overwrite
+
+required_columns = {"sample_id", "text", "entropies"}
+
+
+def validate_schema(path: Path, schema: pa.Schema) -> None:
+    missing = required_columns - set(schema.names)
+    if missing:
+        raise ValueError(f"{path} is missing required columns: {sorted(missing)}")
+
+
+def ensure_ipc_file(path: Path) -> None:
+    try:
+        with pa.ipc.open_file(path) as reader:
+            validate_schema(path, reader.schema)
+        return
+    except pa.ArrowInvalid:
+        pass
+
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    with pa.ipc.open_stream(path) as reader:
+        validate_schema(path, reader.schema)
+        with pa.OSFile(str(tmp_path), "wb") as sink:
+            with pa.ipc.new_file(sink, reader.schema) as writer:
+                for batch in reader:
+                    writer.write_batch(batch)
+    tmp_path.replace(path)
+    print(f"converted arrow stream to ipc file: {path}")
+
+
+ensure_ipc_file(Path(os.environ["TRAIN_ARROW_FILE"]))
+ensure_ipc_file(Path(os.environ["VALIDATION_ARROW_FILE"]))
+PY
+
+echo "marking fineweb_edu_10bt arrow files complete"
+touch "${FINEWEB_TRAIN_ARROW_FILE}.complete"
+touch "${FINEWEB_VALIDATION_ARROW_FILE}.complete"
+touch "${FINEWEB_SOURCE_PLACEHOLDER}"
 
 echo "verification:"
-python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'available:', torch.cuda.is_available())"
+python - <<'PY'
+import torch
+
+print("torch:", torch.__version__, "cuda:", torch.version.cuda, "available:", torch.cuda.is_available())
+PY
 python -m xformers.info | grep -E "build.cuda_version|TORCH_CUDA_ARCH_LIST|cutlassF:|cutlassB:|fa2F|triton_splitK" || true
 
 end_time=$(date +%s)

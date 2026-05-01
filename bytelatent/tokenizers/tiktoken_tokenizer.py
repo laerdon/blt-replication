@@ -1,5 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import logging
+import base64
 from copy import copy
 from pathlib import Path
 
@@ -27,9 +28,38 @@ TIKTOKEN_MAX_ENCODE_CHARS = 400_000
 logger = logging.getLogger(__name__)
 
 
+def load_local_tiktoken_bpe(model_path: str) -> dict[bytes, int]:
+    mergeable_ranks = {}
+    with open(model_path) as f:
+        for line_number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            token, rank = line.split()
+            try:
+                mergeable_ranks[base64.b64decode(token)] = int(rank)
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid tiktoken bpe row in {model_path}:{line_number}"
+                ) from exc
+    return mergeable_ranks
+
+
 class TikTokenTokenizer(Tokenizer):
-    def __init__(self, model_path: str) -> None:
-        mergeable_ranks = load_tiktoken_bpe(model_path)
+    def __init__(
+        self,
+        model_path: str | None = None,
+        path: str | None = None,
+        add_bos: bool = True,
+        add_eos: bool = True,
+    ) -> None:
+        model_path = model_path or path
+        if model_path is None:
+            raise ValueError("model_path or path must be set")
+        if Path(model_path).is_file():
+            mergeable_ranks = load_local_tiktoken_bpe(model_path)
+        else:
+            mergeable_ranks = load_tiktoken_bpe(model_path)
         all_special_tokens_with_ids = copy(DEFAULT_TIKTOKEN_SPECIAL_TOKENS)
         missing_ids = set(range(256)) - set(all_special_tokens_with_ids.values())
         for id in missing_ids:
@@ -46,6 +76,10 @@ class TikTokenTokenizer(Tokenizer):
 
         self.bos_id: int = self.tkt_model.encode_single_token("<|begin_of_text|>")
         self.eos_id: int = self.tkt_model.encode_single_token("<|end_of_text|>")
+        self.pad_id: int = self.tkt_model.encode_single_token("<|fim_pad|>")
+        self.boe_id: int = self.pad_id
+        self.add_bos = add_bos
+        self.add_eos = add_eos
 
         self.n_words: int = self.tkt_model.n_vocab
 
@@ -56,7 +90,13 @@ class TikTokenTokenizer(Tokenizer):
     def get_vocab_size(self) -> int:
         return self.n_words
 
-    def encode(self, s: str, add_bos: bool, add_eos: bool):
+    def encode(
+        self, s: str, add_bos: bool | None = None, add_eos: bool | None = None
+    ):
+        if add_bos is None:
+            add_bos = self.add_bos
+        if add_eos is None:
+            add_eos = self.add_eos
         assert isinstance(s, str)
 
         subs = []
@@ -68,7 +108,12 @@ class TikTokenTokenizer(Tokenizer):
             + [self.eos_id] * add_eos
         )
 
-    def decode(self, tokens: list[int]):
+    def decode(self, tokens: list[int], cut_at_eos: bool = False):
+        if cut_at_eos:
+            for idx, token in enumerate(tokens):
+                if token == self.eos_id:
+                    tokens = tokens[: idx + 1]
+                    break
         return self.tkt_model.decode(tokens)
 
     def get_token_offsets(
