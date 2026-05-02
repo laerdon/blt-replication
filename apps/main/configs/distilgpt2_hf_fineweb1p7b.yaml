@@ -1,0 +1,80 @@
+dump_dir: ./runs/distilgpt2_hf_fineweb_1p7b
+name: distilgpt2_hf_fineweb_1p7b
+seed: 777
+steps: 25940
+max_steps: 25940
+grad_acc_steps: 1
+
+model:
+  n_positions: 1024
+  n_embd: 768
+  n_layer: 6
+  n_head: 12
+  n_inner: null
+
+tokenizer:
+  name_or_path: distilgpt2
+  cache_dir: null
+  revision: null
+  use_fast: true
+
+data:
+  dataset_name: HuggingFaceFW/fineweb-edu
+  dataset_config: sample-10BT
+  data_files: null
+  cache_dir: null
+  train_split: train
+  validation_split: train
+  text_column: text
+  streaming: true
+  shuffle_buffer_size: 10000
+  seq_len: 1024
+  batch_size: 32
+  validation_batch_size: 2
+  add_eos: true
+  train_examples: null
+  validation_examples: 2048
+
+optim:
+  lr: 1.0e-4
+  weight_decay: 0.033
+  epsilon: 1.0e-8
+  beta1: 0.9
+  beta2: 0.95
+  clip: 1.0
+  scheduler: cosine
+  warmup: 1297
+  lr_min_ratio: 1.0e-6
+  cycle_length: 1.0
+  cosine_theta: 1.0
+  fused: null
+
+checkpoint:
+  path: null
+  dump:
+    every: 1297
+    keep: 2
+  eval:
+    every: 1297
+    keep: -1
+  resume_from: null
+  save_final: true
+
+logging:
+  freq: 25
+
+eval:
+  run_ppl: true
+  every: null
+  validation:
+    split: null
+    batch_size: null
+    max_n_batches: 40
+    max_n_docs: null
+
+runtime:
+  device: auto
+  dtype: bf16
+  compile: false
+  matmul_allow_tf32: true
+  log_level: INFO

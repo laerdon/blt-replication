@@ -6,7 +6,7 @@ probe_freq: null
 seed: 777
 
 optim:
-  lr: 2e-4
+  lr: 3e-3
   weight_decay: 0.033
   warmup: 20
   lr_min_ratio: 0.000001

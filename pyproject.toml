@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
     "altair>=5.5.0",
+    "datasets",
     "datatrove>=0.5.0",
     "fsspec>=2024.6.1",
     "huggingface-hub==0.30.*",
@@ -24,6 +25,7 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "submitit>=1.5.2",
     "tiktoken>=0.8.0",
+    "transformers",
     "typer>=0.15.3",
     "viztracer>=1.0.3",
     "wandb>=0.19.10",

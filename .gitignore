@@ -170,3 +170,6 @@ jobs_parallel-copy/
 wandb/
 *.ipynb
 hf-weights/
+
+runs/
+data/
