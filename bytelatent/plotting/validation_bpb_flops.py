@@ -50,6 +50,10 @@ def load_training_flops(metrics_path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
+    if {"global_step", "flops/cumulative"}.issubset(df.columns):
+        df = df.rename(columns={"flops/cumulative": "train_flops"})
+        return df[["global_step", "train_flops"]].dropna()
+
     required = {"global_step", "speed/FLOPS", "speed/wps", "optim/total_tokens"}
     missing = required - set(df.columns)
     if missing:
@@ -68,6 +72,19 @@ def validation_rows_from_metrics_validation(
     for row in read_jsonl(path):
         global_step = row.get("global_step")
         created_at = row.get("created_at")
+        flat_bpb = row.get("validation/bpb")
+        if flat_bpb is not None:
+            output.append(
+                {
+                    "global_step": global_step,
+                    "created_at": created_at,
+                    "validation_source": "validation",
+                    "validation_bpb": flat_bpb,
+                    "train_flops": row.get("flops/cumulative"),
+                }
+            )
+            continue
+
         for source, metrics in row.items():
             if source in {"global_step", "created_at"} or not isinstance(metrics, dict):
                 continue
@@ -126,18 +143,87 @@ def load_validation_bpb(run_dir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("global_step")
 
 
+def interpolate_training_flops(
+    val_df: pd.DataFrame, train_df: pd.DataFrame
+) -> pd.DataFrame:
+    val_sorted = val_df.sort_values("global_step")
+    train_sorted = train_df.sort_values("global_step")
+    prev_train = train_sorted.rename(
+        columns={
+            "global_step": "prev_global_step",
+            "train_flops": "prev_train_flops",
+        }
+    )
+    next_train = train_sorted.rename(
+        columns={
+            "global_step": "next_global_step",
+            "train_flops": "next_train_flops",
+        }
+    )
+    merged = pd.merge_asof(
+        val_sorted,
+        prev_train,
+        left_on="global_step",
+        right_on="prev_global_step",
+        direction="backward",
+    )
+    merged = pd.merge_asof(
+        merged,
+        next_train,
+        left_on="global_step",
+        right_on="next_global_step",
+        direction="forward",
+    )
+
+    def interpolate_row(row: pd.Series) -> float | None:
+        prev_step = row.get("prev_global_step")
+        next_step = row.get("next_global_step")
+        prev_flops = row.get("prev_train_flops")
+        next_flops = row.get("next_train_flops")
+        if pd.isna(prev_flops):
+            return next_flops
+        if pd.isna(next_flops):
+            return prev_flops
+        if prev_step == next_step:
+            return prev_flops
+        weight = (row["global_step"] - prev_step) / (next_step - prev_step)
+        return prev_flops + weight * (next_flops - prev_flops)
+
+    merged["train_flops"] = merged.apply(interpolate_row, axis=1)
+    return merged.drop(
+        columns=[
+            "prev_global_step",
+            "prev_train_flops",
+            "next_global_step",
+            "next_train_flops",
+        ]
+    )
+
+
 def build_plot_frame(metrics_path: Path, runs_dir: Path) -> pd.DataFrame:
     train_df = load_training_flops(metrics_path)
     val_df = load_validation_bpb(metrics_path.parent)
     if train_df.empty or val_df.empty:
         return pd.DataFrame()
 
-    merged = pd.merge_asof(
-        val_df.sort_values("global_step"),
-        train_df.sort_values("global_step"),
-        on="global_step",
-        direction="backward",
-    )
+    if "train_flops" in val_df.columns:
+        val_with_flops = val_df.dropna(subset=["train_flops"])
+        val_without_flops = val_df[val_df["train_flops"].isna()].drop(
+            columns=["train_flops"]
+        )
+    else:
+        val_with_flops = pd.DataFrame()
+        val_without_flops = val_df
+
+    if val_without_flops.empty:
+        merged = val_with_flops
+    else:
+        merged_without_flops = interpolate_training_flops(val_without_flops, train_df)
+        merged = pd.concat(
+            [val_with_flops, merged_without_flops],
+            ignore_index=True,
+        ).sort_values("global_step")
+
     merged = merged.dropna(subset=["train_flops", "validation_bpb"])
     if merged.empty:
         return merged

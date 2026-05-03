@@ -767,6 +767,84 @@ def compute_hash_embeddings(
     return local_encoder_embeds
 
 
+def combine_ngram_embeddings_with_learnable_weights(
+    local_encoder_embeds: torch.Tensor,
+    ngram_ids: torch.Tensor,
+    encoder_ngram_embedding: nn.ModuleList,
+    encoder_ngram_weights: nn.Parameter,
+) -> torch.Tensor:
+    """
+    Combine n-gram embeddings into token embeddings using learnable scalar weights.
+    """
+    assert encoder_ngram_embedding is not None
+    assert encoder_ngram_weights is not None
+    assert len(encoder_ngram_embedding) == ngram_ids.shape[0], (
+        f"ngram_ids.shape[0]={ngram_ids.shape[0]} versus "
+        f"len(encoder_ngram_embedding)={len(encoder_ngram_embedding)}, "
+        f"ngram_ids.shape={ngram_ids.shape}"
+    )
+    assert encoder_ngram_weights.shape[0] == len(encoder_ngram_embedding), (
+        f"encoder_ngram_weights.shape[0]={encoder_ngram_weights.shape[0]} versus "
+        f"len(encoder_ngram_embedding)={len(encoder_ngram_embedding)}"
+    )
+
+    for i in range(ngram_ids.shape[0]):
+        ngram_embedding = encoder_ngram_embedding[i]
+        ngram_embeds = ngram_embedding(ngram_ids[i])
+        assert (
+            local_encoder_embeds.shape == ngram_embeds.shape
+        ), f"Shape mismatch: {local_encoder_embeds.shape} vs {ngram_embeds.shape}, ngram_ids.shape={ngram_ids.shape}"
+
+        # Previous behavior:
+        # local_encoder_embeds = local_encoder_embeds + ngram_embeds
+        local_encoder_embeds = (
+            local_encoder_embeds + encoder_ngram_weights[i] * ngram_embeds
+        )
+
+    return local_encoder_embeds
+
+
+def combine_forward_sliding_trigram_embeddings_with_learnable_weights(
+    local_encoder_tokens: torch.Tensor,
+    local_encoder_embeds: torch.Tensor,
+    sliding_trigram_embedding: nn.ModuleList,
+    sliding_trigram_weights: nn.Parameter,
+) -> torch.Tensor:
+    """
+    Combine backward-looking sliding 3-gram embeddings (bytes 1-3, 2-4, ..., 6-8)
+    using learnable scalar weights per hash function.
+    Each trigram contribution is aligned to its current byte (the right edge).
+    """
+    assert sliding_trigram_embedding is not None
+    assert sliding_trigram_weights is not None
+    assert len(sliding_trigram_embedding) == sliding_trigram_weights.shape[0], (
+        f"len(sliding_trigram_embedding)={len(sliding_trigram_embedding)} versus "
+        f"sliding_trigram_weights.shape[0]={sliding_trigram_weights.shape[0]}"
+    )
+
+    bs, seq_len = local_encoder_tokens.shape
+    if seq_len < 3:
+        return local_encoder_embeds
+
+    windows = local_encoder_tokens.unfold(1, 3, 1)  # [bs, seq_len - 2, 3]
+    num_windows = min(6, windows.shape[1])  # keep only 1-3 through 6-8
+    windows = windows[:, :num_windows, :]
+    trigram_updates = torch.zeros_like(local_encoder_embeds)
+
+    for func_nb in range(len(sliding_trigram_embedding)):
+        trigram_hash_ids = rolling_polynomial_hash(windows, hash_func_nb=func_nb)
+        trigram_hash_ids = trigram_hash_ids % sliding_trigram_embedding[
+            func_nb
+        ].num_embeddings
+        trigram_embeds = sliding_trigram_embedding[func_nb](trigram_hash_ids)
+        trigram_updates[:, 2 : 2 + num_windows, :] = (
+            trigram_updates[:, 2 : 2 + num_windows, :]
+            + sliding_trigram_weights[func_nb] * trigram_embeds
+        )
+
+    return local_encoder_embeds + trigram_updates
+
+
 class ByteLatentTransformer(
     nn.Module,
     SequenceModelWithOutput,
@@ -845,6 +923,9 @@ class ByteLatentTransformer(
 
         # Encoder ngram embedding tables
         self.encoder_ngram_embedding = None
+        self.encoder_ngram_weights = None
+        self.encoder_sliding_trigram_embedding = None
+        self.encoder_sliding_trigram_weights = None
         if args.encoder_enable_byte_ngrams:
             self.encoder_ngram_embedding = nn.ModuleList()
             assert args.ngram_vocab_sizes is not None
@@ -856,6 +937,20 @@ class ByteLatentTransformer(
                 self.encoder_ngram_embedding.append(
                     nn.Embedding(ngram_vocab_size + OFFSET, ngram_emb_dim)
                 )
+            self.encoder_ngram_weights = nn.Parameter(
+                torch.ones(len(self.encoder_ngram_embedding), dtype=torch.float32)
+            )
+
+            self.encoder_sliding_trigram_embedding = nn.ModuleList()
+            for _ in range(args.encoder_hash_byte_group_nb_functions):
+                self.encoder_sliding_trigram_embedding.append(
+                    nn.Embedding(args.encoder_hash_byte_group_vocab, ngram_emb_dim)
+                )
+            self.encoder_sliding_trigram_weights = nn.Parameter(
+                torch.ones(
+                    len(self.encoder_sliding_trigram_embedding), dtype=torch.float32
+                )
+            )
 
         # Output layer
         assert args.vocab_size > 0, "vocab_size must be greater than 0"
@@ -958,16 +1053,37 @@ class ByteLatentTransformer(
                 local_encoder_embeds = self.local_encoder.tok_embeddings(
                     local_encoder_tokens
                 )
-            assert len(ngram_ids) == len(
-                self.encoder_ngram_embedding
-            ), f"ngram_ids.shape[0]={ngram_ids.shape[0]} versus len(encoder_ngram_embedding)={len(self.encoder_ngram_embedding)}, ngram_ids.shape={ngram_ids.shape}"
-            for i in range(ngram_ids.shape[0]):
-                ngram_embedding = self.encoder_ngram_embedding[i]
-                ngram_embeds = ngram_embedding(ngram_ids[i])
-                assert (
-                    local_encoder_embeds.shape == ngram_embeds.shape
-                ), f"Shape mismatch: {local_encoder_embeds.shape} vs {ngram_embeds.shape}, ngram_ids.shape={ngram_ids.shape}"
-                local_encoder_embeds = local_encoder_embeds + ngram_embeds
+            assert (
+                self.encoder_ngram_weights is not None
+            ), "encoder_ngram_weights must be initialized"
+            # Previous behavior (unweighted n-gram addition):
+            # assert len(ngram_ids) == len(
+            #     self.encoder_ngram_embedding
+            # ), f"ngram_ids.shape[0]={ngram_ids.shape[0]} versus len(encoder_ngram_embedding)={len(self.encoder_ngram_embedding)}, ngram_ids.shape={ngram_ids.shape}"
+            # for i in range(ngram_ids.shape[0]):
+            #     ngram_embedding = self.encoder_ngram_embedding[i]
+            #     ngram_embeds = ngram_embedding(ngram_ids[i])
+            #     assert (
+            #         local_encoder_embeds.shape == ngram_embeds.shape
+            #     ), f"Shape mismatch: {local_encoder_embeds.shape} vs {ngram_embeds.shape}, ngram_ids.shape={ngram_ids.shape}"
+            #     local_encoder_embeds = local_encoder_embeds + ngram_embeds
+
+            # Weighted n-gram addition:
+            local_encoder_embeds = combine_ngram_embeddings_with_learnable_weights(
+                local_encoder_embeds=local_encoder_embeds,
+                ngram_ids=ngram_ids,
+                encoder_ngram_embedding=self.encoder_ngram_embedding,
+                encoder_ngram_weights=self.encoder_ngram_weights,
+            )
+            # Optional alternative using forward sliding 3-grams:
+            # local_encoder_embeds = (
+            #     combine_forward_sliding_trigram_embeddings_with_learnable_weights(
+            #         local_encoder_tokens=local_encoder_tokens,
+            #         local_encoder_embeds=local_encoder_embeds,
+            #         sliding_trigram_embedding=self.encoder_sliding_trigram_embedding,
+            #         sliding_trigram_weights=self.encoder_sliding_trigram_weights,
+            #     )
+            # )
 
         # Local encoder
         (h_encoder, h_cross), cache_encoder = self.local_encoder(

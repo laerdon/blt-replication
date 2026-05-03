@@ -84,6 +84,7 @@ class OptimArgs(BaseModel):
     lr_min_ratio: float = 0.000001
     cycle_length: float = 1.0
     cosine_theta: float = 1.0
+    scheduler_steps: int | None = None
     fused: bool | None = None
 
 
@@ -516,16 +517,31 @@ def load_checkpoint(
     optimizer: AdamW,
     scheduler: lr_scheduler.LambdaLR,
     device: torch.device,
+    world_size: int,
 ) -> tuple[int, int, float]:
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"checkpoint directory does not exist: {checkpoint_dir}")
+    if not (checkpoint_dir / "trainer_state.pt").exists():
+        raise FileNotFoundError(f"checkpoint trainer state does not exist: {checkpoint_dir / 'trainer_state.pt'}")
     state_dict = GPT2LMHeadModel.from_pretrained(checkpoint_dir).state_dict()
     unwrap_model(model).load_state_dict(state_dict)
     state = torch.load(checkpoint_dir / "trainer_state.pt", map_location=device, weights_only=False)
     optimizer.load_state_dict(state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
     torch.set_rng_state(state["torch_rng_state"].cpu())
-    if device.type == "cuda" and state.get("cuda_rng_state") is not None:
-        torch.cuda.set_rng_state_all(state["cuda_rng_state"])
-    return int(state["global_step"]), int(state["tokens_seen"]), float(state["cumulative_flops"])
+    cuda_rng_state = state.get("cuda_rng_state")
+    if device.type == "cuda" and cuda_rng_state is not None:
+        # torch.load map_location can place rng tensors on cuda, but this api expects cpu byte tensors.
+        torch.cuda.set_rng_state_all([rng_state.cpu() for rng_state in cuda_rng_state])
+    tokens_seen = int(state["tokens_seen"])
+    cumulative_flops = float(state["cumulative_flops"])
+    if world_size > 1:
+        # checkpoints store global totals, while the training loop all-reduces per-rank counters.
+        if tokens_seen % world_size != 0:
+            raise RuntimeError("checkpoint tokens_seen is not divisible by world_size")
+        tokens_seen = tokens_seen // world_size
+        cumulative_flops = cumulative_flops / world_size
+    return int(state["global_step"]), tokens_seen, cumulative_flops
 
 
 @torch.no_grad()
@@ -675,7 +691,8 @@ def train(args: TrainArgs) -> None:
             eps=args.optim.epsilon,
             fused=fused,
         )
-        scheduler = lr_scheduler.LambdaLR(optimizer, build_lr_lambda(args.optim, n_steps))
+        scheduler_steps = args.optim.scheduler_steps or n_steps
+        scheduler = lr_scheduler.LambdaLR(optimizer, build_lr_lambda(args.optim, scheduler_steps))
 
         global_step = 0
         tokens_seen = 0
@@ -687,6 +704,7 @@ def train(args: TrainArgs) -> None:
                 optimizer=optimizer,
                 scheduler=scheduler,
                 device=device,
+                world_size=world_size,
             )
 
         if world_size > 1:
