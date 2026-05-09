@@ -1,0 +1,44 @@
+# h100 blt run over roughly 1.7b training tokens with batch size 8,
+# using hash byte group sizes 3, 4, and 5 with one hash function each.
+config: bytelatent/configs/h100_fineweb_1p7b_bs8.yaml
+
+dump_dir: ./runs/percentage
+name: percentage
+
+model:
+  encoder_hash_byte_group_size: [3, 4, 5]
+  encoder_hash_byte_group_nb_functions: 1
+  encoder_hash_byte_group_vocab: 20000
+  n_layers_local_encoder: 1
+  n_layers_global: 18
+  n_layers_local_decoder: 5
+
+steps: 25940
+max_steps: 25940
+seed: 777
+
+grad_acc_steps: 4
+data:
+  batch_size: 2
+
+optim:
+  lr: 3e-3
+  weight_decay: 0.033
+  warmup: 1297
+  lr_min_ratio: 0.000001
+  clip: 1.0
+checkpoint:
+  dump:
+    every: 1297
+    keep: 2
+  eval:
+    every: 1297
+    keep: -1
+
+logging:
+  freq: 25
+
+eval:
+  validation:
+    max_n_batches: 15
+    batch_size: 2
