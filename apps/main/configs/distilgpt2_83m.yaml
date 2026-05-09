@@ -1,0 +1,89 @@
+dump_dir: ./runs/distilgpt2_83m
+name: distilgpt2_83m_baseline
+steps: 400
+max_steps: 400
+probe_freq: null
+seed: 777
+
+optim:
+  lr: 3e-3
+  weight_decay: 0.033
+  warmup: 20
+  lr_min_ratio: 0.000001
+  clip: 1.0
+
+distributed:
+  fsdp_type: full_shard
+  compile: true
+  model_dtype: bf16
+  matmul_allow_tf32: true
+  selective_activation_checkpointing: false
+  tp_size: 1
+
+train_entropy_model: true
+model: null
+entropy_model:
+  dim: 768
+  n_layers: 6
+  n_heads: 12
+  head_dim: 64
+  max_seqlen: 1024
+  rope_theta: 10000.0
+  multiple_of: 256
+  weight_tying: true
+  attn_impl: xformers
+
+data:
+  root_dir: ./data
+  sources:
+    fineweb_edu_10bt_mix_1p7bt: 1.0
+  # batch_size * seq_len matches the blt canary's 2 * 4096 token budget per rank.
+  batch_size: 8
+  prefetch_size: 1024
+  seq_len: 1024
+  max_encoder_seq_length: 1024
+  load_async: true
+  add_bos: true
+  add_eos: true
+  preprocess_dir: ./data/preprocess
+  add_patches: false
+  patcher_args:
+    patching_mode: byte
+  tokenizer_args:
+    name: tiktoken
+    init_kwargs:
+      # distilgpt2 uses the gpt-2 bpe vocabulary; keep the local artifact named for the run.
+      model_path: tokenizers/distilgpt2.tiktoken
+
+profiling:
+  run: false
+  mem_warmup: 0
+  mem_steps: 4
+  profile_warmup: 100
+  profile_steps: 4
+
+checkpoint:
+  dump:
+    every: 40
+    keep: 2
+  eval:
+    every: 40
+    keep: -1
+
+logging:
+  freq: 10
+
+async_eval_gpus: null
+eval:
+  run_ppl: true
+  run_tasks: false
+  consolidate_if_needed: true
+  validation:
+    root_dir: ./data/validation/fineweb_edu_10bt_mix_1p7bt/transformer_100m
+    sources:
+      - fineweb_edu_10bt.validation.05_06_07.5m.arrow
+    max_n_batches: 16
+    batch_size: 2
+  generator:
+    max_tokens: 4096
+    dtype: bf16

@@ -1,0 +1,54 @@
+# tiny fresh-training smoke test against local fineweb entropy arrows.
+config: bytelatent/configs/debug.yaml
+
+dump_dir: ./runs/smoke_fresh
+name: smoke_fresh
+steps: 2
+max_steps: 2
+grad_acc_steps: 1
+
+distributed:
+  fsdp_type: full_shard
+  model_dtype: bf16
+  matmul_allow_tf32: true
+  selective_activation_checkpointing: false
+  tp_size: 1
+
+data:
+  root_dir: ./data
+  sources:
+    fineweb_edu_10bt: 1.0
+  batch_size: 1
+  prefetch_size: 2
+  seq_len: 512
+  load_async: false
+  preprocess_dir: ./data/preprocess
+  arrow_batch_size: 1
+  max_encoder_seq_length: 2048
+  tokenizer_args:
+    name: blt
+    init_kwargs: {}
+  patcher_args:
+    patching_mode: entropy
+    patching_device: cuda
+    device: cuda
+
+model:
+  max_encoder_seq_length: 2048
+  max_seqlen: 512
+  max_length: 128
+  local_attention_window_len: 512
+
+checkpoint:
+  dump:
+    every: 2
+    keep: 1
+  eval:
+    every: -1
+    keep: -1
+
+logging:
+  freq: 1
+
+eval: null
+eval_on_gpus: null
