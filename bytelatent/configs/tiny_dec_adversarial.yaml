@@ -1,0 +1,62 @@
+# h100 blt run over roughly 1.7b training tokens with per-rank batch size 2
+# on 8 data-parallel ranks.
+#
+# token budget math for the current 8-gpu launch:
+#   4096 seq_len * 2 batch_size/rank * 8 data-parallel ranks = 65,536 tokens/step
+#   1,700,000,000 / 65,536 = 25,939.9 steps
+#
+# validation budget:
+#   validation shard text bytes: 14,998,789
+#   15 eval batches * 2 batch_size * 2 ranks * 12,288 bytes = 737,280 bytes/eval
+#   20 evals * 737,280 = 14,745,600 bytes, which fits in the validation shard
+#   note: the current eval path reuses the same validation prefix each checkpoint;
+#   this budget is for non-overlapping windows if validation offsets are rotated.
+config: bytelatent/configs/h100_fineweb_1p7b_bs8.yaml
+
+dump_dir: ./runs/h100_fineweb_1p7b_bs8_tiny_decoder_seed2
+name: h100_fineweb_1p7b_bs8_tiny_decoder_seed2
+steps: 25940
+max_steps: 25940
+seed: 777
+
+data:
+  batch_size: 2
+
+model:
+  # Scale the global transformer up using extra depth while keeping a kernel-
+  # friendly 64-wide head dimension (512 / 8). This avoids the awkward 66-wide
+  # heads from a 528d global width and still substantially grows the global
+  # pathway.
+  dim_global: 512
+  n_layers_global: 11
+  n_heads_global: 8
+
+  # Approximate local decoder size: 2,230,528 params.
+  # Keep the decoder width aligned with the shared embedding / cross-attention
+  # path, and shrink decoder capacity by cutting depth instead.
+  dim_local_decoder: 256
+  n_layers_local_decoder: 1
+  n_heads_local_decoder: 8
+
+optim:
+  lr: 3e-3
+  weight_decay: 0.033
+  warmup: 1297
+  lr_min_ratio: 0.000001
+  clip: 1.0
+
+checkpoint:
+  dump:
+    every: 1297
+    keep: 2
+  eval:
+    every: 1297
+    keep: -1
+
+logging:
+  freq: 25
+
+eval:
+  validation:
+    max_n_batches: 15
+    batch_size: 2

@@ -1,5 +1,17 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates
 
+"""
+BLT assembles a byte-level language model out of three stages:
+1. a local encoder that works over byte tokens inside patches,
+2. a global transformer that exchanges information between patches, and
+3. a local decoder that maps patch context back to per-token predictions.
+
+This file also has the tensor work for that architecture: building patch-aligned 
+inputs, converting patch lengths into patch ids, constructing cross-attention masks, 
+and preparing the hash-based n-gram embeddings for the local encoder.
+"""
+
+import math
 from enum import Enum, auto
 from typing import Any, Optional
 
@@ -35,16 +47,8 @@ def get_num_flop_per_token(
     )
 
 
-def causal_mask(b, h, q_idx, kv_idx):
-    return q_idx >= kv_idx
-
-
-def setattrs(_self, **kwargs):
-    for k, v in kwargs.items():
-        setattr(_self, k, v)
-
-
 def get_encoder_dim_token_emb(args):
+    # The encoder token embedding size depends on whether bytes are encoded directly or via patches
     if args.dim_token is not None:
         dim_token_emb = args.dim_token
     elif args.use_local_encoder_transformer:
@@ -65,6 +69,7 @@ def get_encoder_dim_patch_emb(args):
 
 
 def get_global_dim_patch_emb(args):
+    # The global model consumes one embedding per patch, either concatenated or pooled
     dim_token_emb = get_encoder_dim_token_emb(args)
     if args.cross_attn_encoder:
         dim_patch_emb = dim_token_emb * args.cross_attn_k
@@ -107,6 +112,7 @@ def parse_ngram_to_size(ngram_to_size_str: str | None) -> dict[int, int]:
 
 
 def fill_tokens(tokens, patch_size, fill_id):
+    # Pad to a full patch so reshape- and gather-based patch ops stay valid
     batch_size, seq_len = tokens.shape
     if seq_len % patch_size == 0:
         return tokens
@@ -117,6 +123,7 @@ def fill_tokens(tokens, patch_size, fill_id):
 
 
 def decoder_patch_ids_from_lengths(patch_lengths, nb_boe, seq_len):
+    # The decoder skips the synthetic first patch used to seed the encoder/global path
     first_patch_length = patch_lengths[0, 0]
     assert torch.all(
         first_patch_length == patch_lengths[:, 0]
@@ -124,7 +131,7 @@ def decoder_patch_ids_from_lengths(patch_lengths, nb_boe, seq_len):
     assert (
         first_patch_length - nb_boe == 1
     ), f"First patch (patch length: {first_patch_length}) should have one non-boe token (boe toks: {nb_boe})"
-    # Remove first patch from patch_ids for local decoder inputs and shift the last patch.
+    # Remove first patch from patch_ids for local decoder inputs and shift the last patch
     # decoder_patch_lengths = patch_lengths[:, 1:].clone()
     # decoder_patch_lengths = add_to_last_nonzero_patch(decoder_patch_lengths, 1)
     decoder_patch_lengths = patch_lengths[:, 1:]
@@ -155,19 +162,10 @@ primes = [
 
 
 def rolling_polynomial_hash(t, hash_func_nb: int = 0):
+    # Hash short byte windows into stable integer buckets for learned embeddings
     prime = torch.tensor(primes[hash_func_nb], dtype=torch.int64, device=t.device)
     prime_powers = torch.stack([prime**i for i in range(t.shape[-1])])
     return torch.sum(t * prime_powers, dim=-1)
-
-
-def get_rolling_polynomial_hash_fn(hash_func_nb: int = 0, group_size: int = 2):
-    prime = torch.tensor(primes[hash_func_nb], dtype=torch.int64)
-    prime_powers = torch.stack([prime**i for i in range(group_size)])
-
-    def rolling_polynomial_hash_fn(t):
-        return torch.sum(t * prime_powers, dim=-1)
-
-    return rolling_polynomial_hash_fn
 
 
 def byte_group_hash_function(
@@ -191,10 +189,10 @@ def byte_group_hash_function(
         #         end = j+1
         #         hash_values[i, j] = hash_array(x_numpy[i, start:end], max_hash)
 
+        # Prefix zeros let the first few positions participate in a full-size rolling window
         prefix = torch.zeros(bs, group_size - 1, dtype=torch.int64, device=x.device)
         x = torch.cat([prefix, x], dim=1)
         windows = x.unfold(1, group_size, 1)
-        # hashes = get_rolling_polynomial_hash_fn(hash_func_nb, group_size)(windows)
         hashes = rolling_polynomial_hash(windows, hash_func_nb)
         hash_values_range = hashes % max_hash
     hash_values_range.requires_grad = False
@@ -367,16 +365,9 @@ def get_blt_input(
     local_decoder_tokens = tokens
 
     if nb_boe > 0:
+        # Prepend BOE tokens so the first encoder patch has a fixed anchor region
         padded_patch = tokens.new(batch_size, nb_boe).fill_(boe_id)
         local_encoder_tokens = torch.cat((padded_patch, local_encoder_tokens), dim=1)
-    # global_tokens = tokens.new(batch_size, ((seq_len-1) // patch_size)+1).fill_(boe_id)
-
-    # create global tokens, contains boe tokens and eos
-    # padded_local_encoder_tokens = fill_tokens(local_encoder_tokens, patch_size, boe_id)
-    # patches = padded_local_encoder_tokens.view(batch_size, -1, patch_size)
-    # global_tokens = (patches.eq(eos_id).any(dim=2).int() * eos_id)[:, 1:]
-    # global_tokens += global_tokens.eq(0).int() * boe_id
-    # TODO: fix this when we want to use block causal in the global.
 
     if enforce_patch_size_multiple and local_encoder_tokens.shape[-1] % patch_size != 0:
         local_encoder_tokens = fill_tokens(local_encoder_tokens, patch_size, boe_id)
@@ -403,6 +394,36 @@ def patch_ids_from_lengths(patch_lengths, seq_len):
     return patch_ids
 
 
+def patch_length_to_sinusoidal_embedding(
+    patch_lengths: torch.Tensor, dim: int, max_timescale: float = 10000.0
+) -> torch.Tensor:
+    """
+    Convert patch lengths [bs, num_patches] into sinusoidal embeddings
+    [bs, num_patches, dim]. Zero-length padded patches map to zeros.
+    """
+    device = patch_lengths.device
+    dtype = torch.float32
+    patch_lengths = patch_lengths.to(dtype=dtype)
+
+    half_dim = dim // 2
+    if half_dim == 0:
+        return torch.zeros(
+            (*patch_lengths.shape, dim), device=device, dtype=dtype
+        )
+
+    # Encode patch length as a deterministic feature that can be added to patch states
+    exponent = torch.arange(half_dim, device=device, dtype=dtype) / half_dim
+    timescales = torch.exp(-math.log(max_timescale) * exponent)
+    angles = patch_lengths.unsqueeze(-1) * timescales
+    emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
+
+    if dim % 2 == 1:
+        emb = torch.cat([emb, torch.zeros_like(emb[..., :1])], dim=-1)
+
+    emb = emb * patch_lengths.ne(0).unsqueeze(-1)
+    return emb
+
+
 class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Basic model configuration
     seed: int = 42
@@ -410,7 +431,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     dim: int = 512
     n_layers: int = 8
     n_heads: int = 8
-    # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
     patch_in_forward: bool = False
 
@@ -501,6 +521,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     encoder_preds_random_toks: float | None = None
     dim_token_emb: int | None = None
     dim_patch_emb: int | None = None
+    use_patch_length_sinusoidal_embedding: bool = False
 
     encoder_ngram_table_dir: str | None = None
     encoder_ngram_to_size_str: str | None = None
@@ -544,38 +565,8 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
         return self
 
 
-class GlobalTransformerArgs(ByteLatentTransformerArgs):
-    # Global encoder specific dimensions
-    dim_token_emb: int | None = None
-    dim_patch_emb: int | None = None
-
-    def __post_init__(self):
-        # Override base args with global encoder specific values
-        self.dim = self.dim_global
-        self.n_layers = self.n_layers_global
-        self.n_heads = self.n_heads_global
-        self.n_kv_heads = self.n_kv_heads_global
-        self.local_attention_window_len = None
-        self.cross_attn_encoder = False
-        self.cross_attn_decoder = False
-
-
-class LocalDecoderArgs(ByteLatentTransformerArgs):
-    # Local decoder specific dimensions
-    dim_token_emb: int | None = None
-    dim_patch_emb: int | None = None
-
-    def __post_init__(self):
-        # Override base args with local decoder specific values
-        self.dim = self.dim_local_decoder
-        self.n_layers = self.n_layers_local_decoder
-        self.n_heads = self.n_heads_local_decoder
-        self.cross_attn_encoder = False
-        self.cross_attn_init_by_pooling = False
-        self.attn_bias_type = "local_block_causal"
-
-
 def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransformer:
+    # The global transformer always runs on patch embeddings, not raw byte embeddings
     global_args = args.model_copy(
         deep=True,
         update=dict(
@@ -638,7 +629,7 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
 
 
 def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
-    # First deep copy the original args
+    # The decoder consumes token states plus patch context from the global stage
     local_decoder_args = LocalModelArgs(
         dim=args.dim_local_decoder,
         n_layers=args.n_layers_local_decoder,
@@ -682,7 +673,6 @@ def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
 
 class EmbeddingType(Enum):
     HASH_TOK = auto()
-    NGRAM = auto()
 
 
 def init_embeddings(
@@ -691,34 +681,25 @@ def init_embeddings(
     local_encoder_dim: int,
     encoder_hash_byte_group_size: list = None,
 ):
+    # Hash embeddings add n-gram context to an individual byte representation
     if (
         embedding_type == EmbeddingType.HASH_TOK
         and args.encoder_hash_byte_group_size is None
     ):
         return None
-    if embedding_type == EmbeddingType.NGRAM and args.encoder_ngram_to_size_str is None:
-        return None
 
     embeddings = []
 
-    if embedding_type == EmbeddingType.HASH_TOK:
-        emb_dim = local_encoder_dim
-        encoder_hash_byte_group_vocab = args.encoder_hash_byte_group_vocab
-        for _ in range(args.encoder_hash_byte_group_nb_functions):
-            for _ in encoder_hash_byte_group_size:
-                embeddings.append(
-                    nn.Embedding(
-                        encoder_hash_byte_group_vocab,
-                        emb_dim,
-                    )
+    emb_dim = local_encoder_dim
+    encoder_hash_byte_group_vocab = args.encoder_hash_byte_group_vocab
+    for _ in range(args.encoder_hash_byte_group_nb_functions):
+        for _ in encoder_hash_byte_group_size:
+            embeddings.append(
+                nn.Embedding(
+                    encoder_hash_byte_group_vocab,
+                    emb_dim,
                 )
-
-    elif embedding_type == EmbeddingType.NGRAM:
-        encoder_ngram_to_size = parse_ngram_to_size(args.encoder_ngram_to_size_str)
-        emb_dim = local_encoder_dim
-        OFFSET = 4  # This should be passed as parameter if it's variable
-        for ngram_vocab_size in encoder_ngram_to_size.values():
-            embeddings.append(nn.Embedding(ngram_vocab_size + OFFSET, emb_dim))
+            )
 
     return nn.ModuleList(embeddings)
 
@@ -748,6 +729,7 @@ def compute_hash_embeddings(
     if encoder_hash_tok_embedding is None:
         return None
 
+    # Start from standard token embeddings, then add hashed byte-group features on top
     local_encoder_embeds = local_encoder.tok_embeddings(local_encoder_tokens)
 
     i = 0
@@ -765,84 +747,6 @@ def compute_hash_embeddings(
 
     assert i == len(encoder_hash_tok_embedding)
     return local_encoder_embeds
-
-
-def combine_ngram_embeddings_with_learnable_weights(
-    local_encoder_embeds: torch.Tensor,
-    ngram_ids: torch.Tensor,
-    encoder_ngram_embedding: nn.ModuleList,
-    encoder_ngram_weights: nn.Parameter,
-) -> torch.Tensor:
-    """
-    Combine n-gram embeddings into token embeddings using learnable scalar weights.
-    """
-    assert encoder_ngram_embedding is not None
-    assert encoder_ngram_weights is not None
-    assert len(encoder_ngram_embedding) == ngram_ids.shape[0], (
-        f"ngram_ids.shape[0]={ngram_ids.shape[0]} versus "
-        f"len(encoder_ngram_embedding)={len(encoder_ngram_embedding)}, "
-        f"ngram_ids.shape={ngram_ids.shape}"
-    )
-    assert encoder_ngram_weights.shape[0] == len(encoder_ngram_embedding), (
-        f"encoder_ngram_weights.shape[0]={encoder_ngram_weights.shape[0]} versus "
-        f"len(encoder_ngram_embedding)={len(encoder_ngram_embedding)}"
-    )
-
-    for i in range(ngram_ids.shape[0]):
-        ngram_embedding = encoder_ngram_embedding[i]
-        ngram_embeds = ngram_embedding(ngram_ids[i])
-        assert (
-            local_encoder_embeds.shape == ngram_embeds.shape
-        ), f"Shape mismatch: {local_encoder_embeds.shape} vs {ngram_embeds.shape}, ngram_ids.shape={ngram_ids.shape}"
-
-        # Previous behavior:
-        # local_encoder_embeds = local_encoder_embeds + ngram_embeds
-        local_encoder_embeds = (
-            local_encoder_embeds + encoder_ngram_weights[i] * ngram_embeds
-        )
-
-    return local_encoder_embeds
-
-
-def combine_forward_sliding_trigram_embeddings_with_learnable_weights(
-    local_encoder_tokens: torch.Tensor,
-    local_encoder_embeds: torch.Tensor,
-    sliding_trigram_embedding: nn.ModuleList,
-    sliding_trigram_weights: nn.Parameter,
-) -> torch.Tensor:
-    """
-    Combine backward-looking sliding 3-gram embeddings (bytes 1-3, 2-4, ..., 6-8)
-    using learnable scalar weights per hash function.
-    Each trigram contribution is aligned to its current byte (the right edge).
-    """
-    assert sliding_trigram_embedding is not None
-    assert sliding_trigram_weights is not None
-    assert len(sliding_trigram_embedding) == sliding_trigram_weights.shape[0], (
-        f"len(sliding_trigram_embedding)={len(sliding_trigram_embedding)} versus "
-        f"sliding_trigram_weights.shape[0]={sliding_trigram_weights.shape[0]}"
-    )
-
-    bs, seq_len = local_encoder_tokens.shape
-    if seq_len < 3:
-        return local_encoder_embeds
-
-    windows = local_encoder_tokens.unfold(1, 3, 1)  # [bs, seq_len - 2, 3]
-    num_windows = min(6, windows.shape[1])  # keep only 1-3 through 6-8
-    windows = windows[:, :num_windows, :]
-    trigram_updates = torch.zeros_like(local_encoder_embeds)
-
-    for func_nb in range(len(sliding_trigram_embedding)):
-        trigram_hash_ids = rolling_polynomial_hash(windows, hash_func_nb=func_nb)
-        trigram_hash_ids = trigram_hash_ids % sliding_trigram_embedding[
-            func_nb
-        ].num_embeddings
-        trigram_embeds = sliding_trigram_embedding[func_nb](trigram_hash_ids)
-        trigram_updates[:, 2 : 2 + num_windows, :] = (
-            trigram_updates[:, 2 : 2 + num_windows, :]
-            + sliding_trigram_weights[func_nb] * trigram_embeds
-        )
-
-    return local_encoder_embeds + trigram_updates
 
 
 class ByteLatentTransformer(
@@ -896,6 +800,9 @@ class ByteLatentTransformer(
         self.cross_attn_window_encoder = args.cross_attn_window_encoder
         self.cross_attn_window_decoder = args.cross_attn_window_decoder
         self.cross_attn_use_flex_attention = args.cross_attn_use_flex_attention
+        self.use_patch_length_sinusoidal_embedding = (
+            args.use_patch_length_sinusoidal_embedding
+        )
 
         # Encoder hash configuration
         self.encoder_hash_byte_group_size = args.encoder_hash_byte_group_size
@@ -904,7 +811,7 @@ class ByteLatentTransformer(
             args.encoder_hash_byte_group_nb_functions
         )
 
-        # ByteLatent modules
+        # These three modules implement the encoder -> global -> decoder BLT stack
         self.local_encoder = create_local_encoder(args)
         self.global_transformer = create_global_transformer(args)
         self.local_decoder = create_local_decoder(args)
@@ -914,18 +821,10 @@ class ByteLatentTransformer(
             local_encoder_dim=self.local_encoder.dim,
             encoder_hash_byte_group_size=self.encoder_hash_byte_group_size,
         )
-        self.encoder_ngram_embedding = init_embeddings(
-            args,
-            EmbeddingType.NGRAM,
-            local_encoder_dim=self.local_encoder.dim,
-            encoder_hash_byte_group_size=None,
-        )
 
-        # Encoder ngram embedding tables
+        # Frequency-based N-gram tables may still be configured here, but the active encoder path 
+        # uses hash embeddings
         self.encoder_ngram_embedding = None
-        self.encoder_ngram_weights = None
-        self.encoder_sliding_trigram_embedding = None
-        self.encoder_sliding_trigram_weights = None
         if args.encoder_enable_byte_ngrams:
             self.encoder_ngram_embedding = nn.ModuleList()
             assert args.ngram_vocab_sizes is not None
@@ -937,20 +836,6 @@ class ByteLatentTransformer(
                 self.encoder_ngram_embedding.append(
                     nn.Embedding(ngram_vocab_size + OFFSET, ngram_emb_dim)
                 )
-            self.encoder_ngram_weights = nn.Parameter(
-                torch.ones(len(self.encoder_ngram_embedding), dtype=torch.float32)
-            )
-
-            self.encoder_sliding_trigram_embedding = nn.ModuleList()
-            for _ in range(args.encoder_hash_byte_group_nb_functions):
-                self.encoder_sliding_trigram_embedding.append(
-                    nn.Embedding(args.encoder_hash_byte_group_vocab, ngram_emb_dim)
-                )
-            self.encoder_sliding_trigram_weights = nn.Parameter(
-                torch.ones(
-                    len(self.encoder_sliding_trigram_embedding), dtype=torch.float32
-                )
-            )
 
         # Output layer
         assert args.vocab_size > 0, "vocab_size must be greater than 0"
@@ -975,6 +860,20 @@ class ByteLatentTransformer(
 
     def get_output_seq_len(self):
         return self.max_seqlen
+
+    def _get_local_encoder_embeds(
+        self,
+        local_encoder_tokens: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        # Centralize local encoder embedding assembly before the encoder forward pass
+        return compute_hash_embeddings(
+            local_encoder_tokens=local_encoder_tokens,
+            local_encoder=self.local_encoder,
+            encoder_hash_tok_embedding=self.encoder_hash_tok_embedding,
+            encoder_hash_byte_group_nb_functions=self.encoder_hash_byte_group_nb_functions,
+            encoder_hash_byte_group_size=self.encoder_hash_byte_group_size,
+            encoder_hash_byte_group_vocab=self.encoder_hash_byte_group_vocab,
+        )
 
     def forward(
         self,
@@ -1037,53 +936,7 @@ class ByteLatentTransformer(
             )
 
         # Hashing and embedding
-        local_encoder_embeds = compute_hash_embeddings(
-            local_encoder_tokens=local_encoder_tokens,
-            local_encoder=self.local_encoder,
-            encoder_hash_tok_embedding=self.encoder_hash_tok_embedding,
-            encoder_hash_byte_group_nb_functions=self.encoder_hash_byte_group_nb_functions,
-            encoder_hash_byte_group_size=self.encoder_hash_byte_group_size,
-            encoder_hash_byte_group_vocab=self.encoder_hash_byte_group_vocab,
-        )
-
-        # N-gram table embeddings
-        if self.encoder_ngram_embedding is not None:
-            assert ngram_ids is not None, "ngram_ids must be provided"
-            if local_encoder_embeds is None:
-                local_encoder_embeds = self.local_encoder.tok_embeddings(
-                    local_encoder_tokens
-                )
-            assert (
-                self.encoder_ngram_weights is not None
-            ), "encoder_ngram_weights must be initialized"
-            # Previous behavior (unweighted n-gram addition):
-            # assert len(ngram_ids) == len(
-            #     self.encoder_ngram_embedding
-            # ), f"ngram_ids.shape[0]={ngram_ids.shape[0]} versus len(encoder_ngram_embedding)={len(self.encoder_ngram_embedding)}, ngram_ids.shape={ngram_ids.shape}"
-            # for i in range(ngram_ids.shape[0]):
-            #     ngram_embedding = self.encoder_ngram_embedding[i]
-            #     ngram_embeds = ngram_embedding(ngram_ids[i])
-            #     assert (
-            #         local_encoder_embeds.shape == ngram_embeds.shape
-            #     ), f"Shape mismatch: {local_encoder_embeds.shape} vs {ngram_embeds.shape}, ngram_ids.shape={ngram_ids.shape}"
-            #     local_encoder_embeds = local_encoder_embeds + ngram_embeds
-
-            # Weighted n-gram addition:
-            local_encoder_embeds = combine_ngram_embeddings_with_learnable_weights(
-                local_encoder_embeds=local_encoder_embeds,
-                ngram_ids=ngram_ids,
-                encoder_ngram_embedding=self.encoder_ngram_embedding,
-                encoder_ngram_weights=self.encoder_ngram_weights,
-            )
-            # Optional alternative using forward sliding 3-grams:
-            # local_encoder_embeds = (
-            #     combine_forward_sliding_trigram_embeddings_with_learnable_weights(
-            #         local_encoder_tokens=local_encoder_tokens,
-            #         local_encoder_embeds=local_encoder_embeds,
-            #         sliding_trigram_embedding=self.encoder_sliding_trigram_embedding,
-            #         sliding_trigram_weights=self.encoder_sliding_trigram_weights,
-            #     )
-            # )
+        local_encoder_embeds = self._get_local_encoder_embeds(local_encoder_tokens)
 
         # Local encoder
         (h_encoder, h_cross), cache_encoder = self.local_encoder(
@@ -1112,7 +965,13 @@ class ByteLatentTransformer(
             # Reshape h_cross
             h = h_cross.view(bs, patch_lengths.shape[1], -1)
 
-        # Global transformer
+        if self.use_patch_length_sinusoidal_embedding:
+            # Patch length can be injected as an additive feature on global patch states
+            h = h + patch_length_to_sinusoidal_embedding(
+                patch_lengths, h.shape[-1]
+            ).to(dtype=h.dtype)
+
+        # Global transformer using patch hidden states
         global_tokens = tokens.new(h.shape[0], h.shape[1]).fill_(self.boe_id)
         rows, cols = torch.where(local_encoder_tokens == self.eos_id)
         eos_patch_ids = patch_ids[rows, cols]
@@ -1139,6 +998,7 @@ class ByteLatentTransformer(
 
         # Cross-attention decoder
         if not self.cross_attn_decoder:
+            # In the simple case, each token just gathers the state for its owning patch
             h = torch.gather(
                 h, 1, decoder_patch_ids.unsqueeze(-1).expand(-1, -1, h.shape[-1])
             )
