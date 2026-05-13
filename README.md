@@ -16,7 +16,7 @@ crossover point.
   <img width="683" height="510" alt="image" src="https://github.com/user-attachments/assets/ff804955-1bdb-468b-948d-539958bd67df" />
 </p>
 
-## Reimplemented Files
+## Reimplemented files
 
 We reimplemented BLT architecture is concentrated in four files:
 
@@ -42,7 +42,7 @@ We reimplemented BLT architecture is concentrated in four files:
 We intentionally left distributed/runtime infrastructure mostly intact and
 focused on the model code that defines the architecture.
 
-## Patching And Representations
+## Patching, representations
 
 The patch-length embedding experiment is implemented in `bytelatent/model/blt.py`.
 After the local encoder builds patch states, the model can convert `patch_lengths`
@@ -51,7 +51,7 @@ patch states before the global transformer. This is controlled by
 `use_patch_length_sinusoidal_embedding` and enabled in
 `bytelatent/configs/patch_len_embeddings.yaml`.
 
-## GPT-2 Baseline
+## GPT-2 baseline
 
 `apps/main/train_distilgpt2.py` is the HuggingFace GPT-2 baseline trainer we made to compare with the BLT architecture. It builds a `GPT2LMHeadModel` from config, streams FineWeb-Edu text, tokenizes with
 the `distilgpt2` BPE tokenizer, trains with AdamW and cosine LR, logs BPB using
@@ -73,7 +73,7 @@ Older GPT-2-shaped configs also exist in `apps/main/configs/distilgpt2_83m*.yaml
 Those follow the repo's BLT training-config shape and were useful during setup,
 but the HF trainer path above is the original baseline path.
 
-## Training Configs
+## Training configs
 
 The BLT configs inherit from each other using the `config:` key.
 
@@ -98,7 +98,7 @@ The BLT configs inherit from each other using the `config:` key.
   This uses `use_patch_length_sinusoidal_embedding` so the global transformer sees
   patch length as an extra signal.
 
-## Experiment Summary
+## Experiment summary
 
 | Variant | Config | N-gram | Params | BPB |
 | --- | --- | --- | --- | --- |
@@ -115,7 +115,7 @@ Shrinking either local side too aggressively creates a bottleneck. A concentrate
 n-gram lengths with smaller tables, and sinusoidal patch-length embeddings gave
 us a direct patch-representation ablation.
 
-## Environment Setup
+## Env setups
 
 To run experiments on Prime Intellect H100s, we needed a repeatable way to turn
 a fresh Ubuntu GPU box into a BLT training machine. `setup/create_env_uv.sh`
