@@ -1,0 +1,274 @@
+async_eval_gpus: null
+checkpoint:
+  continue_training_from_init: false
+  dump:
+    every: 1297
+    keep: 2
+  eval:
+    every: 1297
+    keep: -1
+  init_ckpt_path: null
+  path: ./runs/h100_fineweb_1p7b_bs8_tiny_decoder/checkpoints
+  s3_profile: null
+data:
+  add_bos: true
+  add_eos: true
+  add_patches: true
+  arrow_batch_size: 20
+  async_persist_type: exact
+  batch_size: 2
+  buffer_size: 64
+  dataset_files: null
+  enable_byte_ngrams: false
+  entropy_model_name: transformer_100m
+  file_format: arrow
+  load_async: true
+  max_encoder_seq_length: 12288
+  pad_to_max_length: true
+  patcher_args:
+    device: cuda
+    entropy_model_checkpoint_dir: null
+    log_time: false
+    max_patch_length: null
+    monotonicity: false
+    patch_size: 4.5
+    patching_batch_size: 1
+    patching_device: cuda
+    patching_mode: entropy
+    realtime_patching: false
+    threshold: 1.335442066192627
+    threshold_add: null
+  prefetch_size: 64
+  preprocess_dir: ./data/preprocess
+  root_dir: ./data
+  s3_profile: null
+  seed: 42
+  seq_len: 4096
+  sources:
+    fineweb_edu_10bt_mix_1p7bt: 1.0
+  tokenizer_args:
+    init_kwargs:
+      bpe_tokenizer_path: ''
+    name: blt
+debug_dynamo: false
+distributed:
+  allow_bf16_reduced_precision_reduction: true
+  compile: false
+  compile_cache_size_limit: 8
+  detect_anomaly: false
+  dp_replicate: 8
+  dp_shard: 1
+  float8_filter: layers\.[0-9]+\.
+  float8_recipe: null
+  fsdp_type: full_shard
+  matmul_allow_tf32: true
+  model_dtype: bf16
+  selective_activation_checkpointing: false
+  spawn_method: forkserver
+  tp_size: 1
+dump_dir: ./runs/h100_fineweb_1p7b_bs8_tiny_decoder
+entropy_model: null
+env:
+  ENABLE_INTRA_NODE_COMM: '1'
+  MKL_NUM_THREADS: '1'
+  MKL_SERVICE_FORCE_INTEL: GNU
+  NCCL_DEBUG: INFO
+  NCCL_IB_TIMEOUT: '22'
+  OMP_NUM_THREADS: '1'
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: '1'
+  TORCH_NCCL_AVOID_RECORD_STREAMS: '1'
+eval:
+  ckpt_dir: null
+  consolidate_folder: consolidated
+  consolidate_if_needed: true
+  dump_dir: null
+  entropy_ckpt_dir: null
+  generator:
+    compile_prefilling: false
+    device: cuda
+    dtype: bf16
+    max_gen_len: 512
+    max_prompt_len: null
+    max_tokens: 1024
+    reduce_generation_overhead: false
+    show_progress: false
+    temperature: 0.0
+    top_k: null
+    top_p: null
+    until: []
+  global_step: null
+  harness:
+    apply_chat_template: false
+    bootstrap_iters: 100000
+    cache_requests: false
+    check_integrity: false
+    delete_requests_cache: false
+    device: null
+    fewshot_as_multiturn: false
+    fewshot_random_seed: 1234
+    gen_kwargs: null
+    limit: null
+    log_samples: true
+    num_fewshot: null
+    numpy_random_seed: 1234
+    predict_only: false
+    random_seed: 0
+    rewrite_requests_cache: false
+    system_instruction: null
+    tasks: null
+    torch_random_seed: 1234
+    use_cache: null
+    verbosity: INFO
+    write_out: false
+  metric_log_dir: null
+  prompts: null
+  run_ppl: true
+  run_tasks: false
+  s3_profile: null
+  validation:
+    batch_size: 2
+    max_n_batches: 15
+    max_n_docs: null
+    root_dir: ./data/validation/fineweb_edu_10bt_mix_1p7bt/transformer_100m
+    sources:
+    - fineweb_edu_10bt.validation.05_06_07.5m.arrow
+    use_val_from_train_src: true
+eval_on_gpus: null
+gc_collect_freq: 1000
+grad_acc_steps: 1
+logging:
+  acc_freq: null
+  freq: 25
+  wandb: null
+max_steps: 25940
+model:
+  alpha_depth: disabled
+  architecture: vanilla
+  attn_bias_type: block_causal
+  attn_impl: xformers
+  attn_to_keep: all
+  conv_kernel_size: null
+  cross_attn_all_layers_decoder: true
+  cross_attn_all_layers_encoder: true
+  cross_attn_decoder: true
+  cross_attn_encoder: true
+  cross_attn_init_by_pooling: true
+  cross_attn_k: 8
+  cross_attn_nheads: 4
+  cross_attn_use_flex_attention: true
+  cross_attn_window_decoder: 512
+  cross_attn_window_encoder: 512
+  custom_bwd: false
+  dim: 512
+  dim_global: 512
+  dim_local_decoder: 256
+  dim_local_encoder: 256
+  dim_patch_emb: null
+  dim_token: 256
+  dim_token_emb: null
+  downsampling_by_pooling: max
+  dropout: 0.0
+  encoder_enable_byte_group_hash: false
+  encoder_enable_byte_ngrams: false
+  encoder_hash_byte_group_nb_functions: 3
+  encoder_hash_byte_group_size:
+  - 4
+  encoder_hash_byte_group_vocab: 50002
+  encoder_lm_loss: false
+  encoder_ngram_table_dir: null
+  encoder_ngram_to_size_str: null
+  encoder_preds_low_entropy_toks: null
+  encoder_preds_random_toks: null
+  entropy_model_checkpoint_dir: null
+  entropy_model_is_ngram_model: false
+  eos_id: 2
+  ffn_dim_multiplier: 1.0
+  full_logging_n_layers: 4
+  fuse_sequence_parallel: false
+  global_local_decoder_residual_layer: null
+  head_dim: null
+  init_base_std: null
+  init_std_factor: disabled
+  init_use_depth: current
+  init_use_gaussian: true
+  layer_ckpt: none
+  local_attention_window_len: 512
+  log_patch_lengths: true
+  loss_parallel: false
+  max_encoder_seq_length: 12288
+  max_length: 256
+  max_patch_length: null
+  max_seqlen: 4096
+  monotonicity: false
+  multiple_of: 256
+  n_heads: 8
+  n_heads_global: 8
+  n_heads_local_decoder: 8
+  n_heads_local_encoder: 8
+  n_kv_heads: null
+  n_kv_heads_global: null
+  n_layers: 8
+  n_layers_global: 11
+  n_layers_local_decoder: 1
+  n_layers_local_encoder: 8
+  ngram_vocab_sizes: null
+  non_linearity: swiglu
+  norm_affine: true
+  norm_eps: 1.0e-05
+  norm_type: rmsnorm
+  output_size: -1
+  pad_to_max_length: true
+  patch_in_forward: false
+  patch_size: 6.0
+  patching_batch_size: 1
+  patching_device: cuda
+  patching_mode: space
+  patching_threshold: 3.1439168453216553
+  patching_threshold_add: null
+  patching_thresholds_str: null
+  pm_size: 0
+  pre_norm: true
+  recompute_attn: false
+  recompute_fc1_out: false
+  recompute_fc3_out: false
+  rope_theta: 10000.0
+  rope_use_fp32_in_outer_product: false
+  seed: 42
+  sequence_parallel: false
+  share_encoder_decoder_emb: true
+  tie_local_encoder_decoder: false
+  tie_local_encoder_decoder_logits: false
+  tokenize_with_bpe_delimiter: false
+  use_fsdp: true
+  use_local_encoder_transformer: true
+  use_patch_length_sinusoidal_embedding: false
+  use_rope: true
+  vocab_size: 260
+  weight_tying: false
+name: h100_fineweb_1p7b_bs8_tiny_decoder
+optim:
+  annealing_step: 1000
+  beta1: 0.9
+  beta2: 0.95
+  clip: 1.0
+  cosine_theta: 1.0
+  cycle_length: 1.0
+  decay_fraction: 0.1
+  epsilon: 1.0e-08
+  exp_factor: 0.5
+  lr: 0.003
+  lr_min_ratio: 1.0e-06
+  scheduler: cosine
+  warmup: 1297
+  weight_decay: 0.033
+probe_freq: null
+profiling:
+  mem_steps: 2
+  mem_warmup: 100
+  profile_steps: 2
+  profile_warmup: 102
+  run: false
+  trace_folder: profiling
+seed: 777
+steps: 25940
+train_entropy_model: false

@@ -1,0 +1,1 @@
+{"created_at": "2026-05-01T14:37:29.884800", "global_step": 5188, "ppl": {"fineweb_edu_10bt.validation.05_06_07.5m.arrow": {"n_bytes": 288893, "n_bytes_gpu": 142406, "loss_sum": 499392.0, "loss_sum_gpu": 249344.0, "loss_mean": 1.7286400155074717, "loss_mean_gpu": 1.75093746050026, "ppl": 5.632987920578994, "bpb": 2.49390037785485}}, "tasks": null}
