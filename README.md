@@ -53,8 +53,7 @@ patch states before the global transformer. This is controlled by
 
 ## GPT-2 Baseline
 
-`apps/main/train_distilgpt2.py` is the HuggingFace GPT-2 baseline trainer. It
-builds a `GPT2LMHeadModel` from config, streams FineWeb-Edu text, tokenizes with
+`apps/main/train_distilgpt2.py` is the HuggingFace GPT-2 baseline trainer we made to compare with the BLT architecture. It builds a `GPT2LMHeadModel` from config, streams FineWeb-Edu text, tokenizes with
 the `distilgpt2` BPE tokenizer, trains with AdamW and cosine LR, logs BPB using
 actual UTF-8 byte counts, estimates cumulative FLOPs, runs validation, supports
 checkpoint resume, and supports single-node DDP through `torchrun`.
@@ -72,7 +71,7 @@ The helper launcher is:
 
 Older GPT-2-shaped configs also exist in `apps/main/configs/distilgpt2_83m*.yaml`.
 Those follow the repo's BLT training-config shape and were useful during setup,
-but the HF trainer path above is the clean baseline path.
+but the HF trainer path above is the original baseline path.
 
 ## Training Configs
 
@@ -94,10 +93,10 @@ The BLT configs inherit from each other using the `config:` key.
 - `bytelatent/configs/large_enc_dec_3x4_50k.yaml`: best 4-gram-style run. It
   keeps the inherited `[4]` byte group with three hash functions and a ~50k hash
   table, giving several independent 4-gram hash views instead of spreading
-  capacity across 3-, 4-, and 5-grams.
+  the vocabulary size parameters across 3, 4, and 5-grams.
 - `bytelatent/configs/patch_len_embeddings.yaml`: patch representation ablation.
-  It enables `use_patch_length_sinusoidal_embedding` so the global transformer sees
-  patch length as an additive signal.
+  This uses `use_patch_length_sinusoidal_embedding` so the global transformer sees
+  patch length as an extra signal.
 
 ## Experiment Summary
 
