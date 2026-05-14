@@ -97,23 +97,6 @@ The BLT configs inherit from each other using the `config:` key.
   This uses `use_patch_length_sinusoidal_embedding` so the global transformer sees
   patch length as an extra signal.
 
-### Experiment summary
-
-| Variant | Config | N-gram | Params | BPB |
-| --- | --- | --- | --- | --- |
-| GPT-2 Baseline | `apps/main/configs/distilgpt2_hf_fineweb1p7b.yaml` | BPE | 49M | 1.22 |
-| Small Encoder baseline | `bytelatent/configs/tiny_enc_baseline.yaml` | 3, 4, 5 | 86M | 1.27 |
-| Small Decoder adversarial | `bytelatent/configs/tiny_dec_adversarial.yaml` | 4 | 86M | 1.31 |
-| Large Encoder + Decoder | `bytelatent/configs/large_enc_dec_345_20k.yaml` / `large_enc_dec_345_50k.yaml` | 3, 4, 5 | 86M | 1.21 |
-| Large Encoder + Decoder best | `bytelatent/configs/large_enc_dec_3x4_50k.yaml` | 4 | 86M | 1.21 |
-| Patch length embeddings | `bytelatent/configs/patch_len_embeddings.yaml` | 4 | 86M | 1.26 |
-
-Main takeaways: at this ultra-low scale, parameter allocation matters a lot.
-Shrinking either local side too aggressively creates a bottleneck. A concentrated
-4-gram hash setup was better than spreading the same idea across multiple
-n-gram lengths with smaller tables, and sinusoidal patch-length embeddings gave
-us a direct patch-representation ablation.
-
 ### Env setups
 
 To run experiments on Prime Intellect H100s, we needed a repeatable way to turn
